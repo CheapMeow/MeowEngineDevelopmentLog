@@ -406,7 +406,7 @@ RuntimeWindow::CreateSurface()
 
 于是还是需要重来
 
-## 改造
+## 改造 render pass
 
 传入 render pass 的用来制作 framebuffer 的 image
 
@@ -433,4 +433,69 @@ vulkan 离屏渲染的纹理应该不需要准备跟 swapchain 一样的份数
 但是我又不想改现在的结构
 
 于是给现在的前向或者后向的 render pass 的 current_image_index 设为 0 就好了
+
+原来在 windows 里面是
+
+```cpp
+        m_render_pass_ptr->Start(cmd_buffer, m_surface_data, m_current_image_index);
+        m_render_pass_ptr->Draw(cmd_buffer);
+        m_render_pass_ptr->End(cmd_buffer);
+```
+
+改为
+
+```cpp
+        m_render_pass_ptr->Start(cmd_buffer, m_surface_data, 0);
+        m_render_pass_ptr->Draw(cmd_buffer);
+        m_render_pass_ptr->End(cmd_buffer);
+```
+
+## imgui vulkan info
+
+```cpp
+// Register a texture
+// FIXME: This is experimental in the sense that we are unsure how to best design/tackle this problem, please post to https://github.com/ocornut/imgui/pull/914 if you have suggestions.
+VkDescriptorSet ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image_view, VkImageLayout image_layout)
+{
+    ImGui_ImplVulkan_Data* bd = ImGui_ImplVulkan_GetBackendData();
+    ImGui_ImplVulkan_InitInfo* v = &bd->VulkanInitInfo;
+
+    // Create Descriptor Set:
+    VkDescriptorSet descriptor_set;
+    {
+        VkDescriptorSetAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = v->DescriptorPool;
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &bd->DescriptorSetLayout;
+        VkResult err = vkAllocateDescriptorSets(v->Device, &alloc_info, &descriptor_set);
+        check_vk_result(err);
+    }
+```
+
+这里报错 v 是 null
+
+是我 `ImGui_ImplVulkan_Init` 的时机的问题
+
+我想要所有东西都创建完了之后再 `ImGui_ImplVulkan_Init`
+
+但是在这之前我还想调用 `ImGui_ImplVulkan_AddTexture` 就出错了
+
+于是用一种肮脏的方法来实现……用一个 bool 表示什么时候是可以调用 `ImGui_ImplVulkan_AddTexture` 的
+
+## render target
+
+我创建的 input attachment 居然是默认没有 sampler 的
+
+哦……于是看到了
+
+我创建 attachment 和 texture 的策略是不一样的
+
+attachment 是纯粹用于渲染的输入输出的
+
+texture 是可以纹理映射的
+
+于是现在我缺少一个两者都有的东西
+
+于是这就是 render target 了
 
