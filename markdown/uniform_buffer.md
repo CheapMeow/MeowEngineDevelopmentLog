@@ -1,92 +1,33 @@
-## Transfrom Debug
+# uniform buffer
 
-不知道为什么，获取变换矩阵的函数始终有问题
+## 超内存限制了
 
-```cpp
-glm::mat4 GetTransform() const
-{
-    glm::mat4 transform;
+单独一个物体是正常的
 
-    glm::mat3 rotation_mat = glm::mat3_cast(rotation);
+于是要测试一下最多渲染多少个物体不会卡
 
-    // Set up final matrix with scale, rotation and translation
-    transform[0][0] = scale.x * rotation_mat[0][0];
-    transform[0][1] = scale.y * rotation_mat[0][1];
-    transform[0][2] = scale.z * rotation_mat[0][2];
-    transform[0][3] = position.x;
-    transform[1][0] = scale.x * rotation_mat[1][0];
-    transform[1][1] = scale.y * rotation_mat[1][1];
-    transform[1][2] = scale.z * rotation_mat[1][2];
-    transform[1][3] = position.y;
-    transform[2][0] = scale.x * rotation_mat[2][0];
-    transform[2][1] = scale.y * rotation_mat[2][1];
-    transform[2][2] = scale.z * rotation_mat[2][2];
-    transform[2][3] = position.z;
-
-    // No projection term
-    transform[3][0] = 0;
-    transform[3][1] = 0;
-    transform[3][2] = 0;
-    transform[3][3] = 1;
-
-    return transform;
-}
-```
-
-如果 position 为 0，那么就不会出现错误
-
-如果 position 不为 0，那么就会出现这样的
-
-![alt text](../assets/error_of_transform.png)
-
-试了一下单个物体的
-
-![alt text](../assets/error_of_transform.gif)
-
-发现会有这样哈哈镜的效果
-
-于是再看 UBO
-
-![alt text](../assets/error_of_transform_uniform_data.png)
-
-确实是出错了，位置的信息出现在缩放这里了
-
-于是输出一下我的原始数据
-
-```cpp
-            ubo_data.model = transfrom_comp_ptr2->GetTransform();
-
-            std::cout << ubo_data.model[0][0] << ',' << ubo_data.model[0][1] << ',' << ubo_data.model[0][2] << ','
-                      << ubo_data.model[0][3] << std::endl;
-            std::cout << ubo_data.model[1][0] << ',' << ubo_data.model[1][1] << ',' << ubo_data.model[1][2] << ','
-                      << ubo_data.model[1][3] << std::endl;
-            std::cout << ubo_data.model[2][0] << ',' << ubo_data.model[2][1] << ',' << ubo_data.model[2][2] << ','
-                      << ubo_data.model[2][3] << std::endl;
-            std::cout << ubo_data.model[3][0] << ',' << ubo_data.model[3][1] << ',' << ubo_data.model[3][2] << ','
-                      << ubo_data.model[3][3] << std::endl;
-            std::cout << std::endl;
-
-            // ubo_data.model = glm::rotate(ubo_data.model, glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-
-            for (int32_t i = 0; i < model_comp_ptr->model_ptr.lock()->meshes.size(); ++i)
-            {
-                m_obj2attachment_mat.BeginObject();
-                m_obj2attachment_mat.SetLocalUniformBuffer("uboMVP", &ubo_data, sizeof(ubo_data));
-                m_obj2attachment_mat.EndObject();
-            }
-        }
-```
-
-输出的确实是对的
+一开始做 101 个物体的时候就包了超出内存限制的错误，然后等待几分钟才出现渲染截面，并且才 10 帧
 
 ```
-1,0,0,0.5
-0,1,0,0
-0,0,1,0
-0,0,0,1
+[12:58:40] RUNTIME: Error: { Validation }:
+        messageIDName   = <VUID-vkAllocateMemory-maxMemoryAllocationCount-04101>
+        messageIdNumber = 1318213324
+        message         = <Validation Error: [ VUID-vkAllocateMemory-maxMemoryAllocationCount-04101 ] | MessageID = 0x4e9256cc | vkAllocateMemory():  vkAllocateMemory: Number of currently valid memory objects is not less than maxMemoryAllocationCount (4096). The Vulkan spec states: There must be less than VkPhysicalDeviceLimits::maxMemoryAllocationCount device memory allocations currently allocated on the device (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkAllocateMemory-maxMemoryAllocationCount-04101)>
 ```
 
-后面发现是 glm 的矩阵是列主序
+这个 `memory object` 它也没告诉我具体是什么样的 object
+
+搜了一下，别人说可能是 uniform buffer 的数量超出限制了
+
+[https://www.reddit.com/r/vulkan/comments/10uqjpl/vulkan_memory_allocator_number_of_currently_valid/](https://www.reddit.com/r/vulkan/comments/10uqjpl/vulkan_memory_allocator_number_of_currently_valid/)
+
+开 renderdoc 看了一下，与渲染一个背包相关的渲染指令有 (351-39)/4+1 = 79 个，每一个渲染指令创建两个 buffer
+
+也就是说，这个背包也需要 160 个 buffer 左右
+
+怪不得我会超出限制
+
+所以我做环形 uniform buffer 的目的是减小 uniform buffer 的数量
 
 ## Uniform Buffer offset debug
 

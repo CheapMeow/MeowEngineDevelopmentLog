@@ -1,10 +1,4 @@
-## lib 或者 dll
-
-dll 的内存分配是一个问题
-
-然后就是跨 dll 的话，有些编译器的优化可能不行
-
-但是 dll 的话，可以把不同的模块拆成不同的 dll，我觉得这个挺好的……
+# input scheme
 
 ## input scheme
 

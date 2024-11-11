@@ -1,3 +1,5 @@
+# 离屏渲染
+
 ## Command pool
 
 不知道为什么，我之间抄了 vkguide 的一个 upload context，这里面就是单独一个 context 装 command pool
@@ -301,3 +303,134 @@ if (Windows.Scene.Visible) {
 到他这个 `Scene::Scene(const VulkanContext &vc)` 看，就可以看到他这个 resolve 在 pipeline 中的应用
 
 所以是时候该自己试试了
+
+## 最佳实践检查
+
+我才发现原来有检查最佳实践的东西
+
+[https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/best_practices.md](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/best_practices.md)
+
+## 离屏渲染开发
+
+报错是 vulkan instance 为空？
+
+```cpp
+    RenderSystem::RenderSystem()
+    {
+        CreateVulkanInstance();
+
+        std::cout << "Testing" << std::endl;
+        std::cout << &m_vulkan_instance << std::endl;
+
+        g_runtime_global_context.window_system->AddWindow(std::make_shared<RuntimeWindow>(0));
+
+```
+
+```cpp
+    void RuntimeWindow::CreateSurface()
+    {
+        const vk::raii::Instance& vulkan_instance = g_runtime_global_context.render_system->GetInstance();
+
+        std::cout << "RuntimeWindow::CreateSurface()" << std::endl;
+        std::cout << &vulkan_instance << std::endl;
+
+        auto         size = GetSize();
+        vk::Extent2D extent(size.x, size.y);
+        m_surface_data = SurfaceData(vulkan_instance, GetGLFWWindow(), extent);
+    }
+```
+
+输出
+
+```
+Testing
+0x1ebb98ee840
+RuntimeWindow::CreateSurface()
+0x40
+```
+
+好吧，于是发现 RenderSystem 是空
+
+于是懂了……我是在 RenderSystem 构造函数里面还去获取 RenderSystem 实例，这个时候 RenderSystem 还没创建完成呢
+
+于是把事情挪到 Start 里面就好了
+
+## 不用 imgui 的结构
+
+别人是，渲染场景就是用自己的 `render pass`
+
+离屏渲染的纹理作为 `framebuffer`
+
+发现这个最终 `RefreshFrameBuffers` 的纹理我是默认 `swapchain` 传入
+
+或许需要改一下
+
+然后看到 `ImGuiVulkanHppImage` 里面的 `FrameRender` 都是直接用 `wd` 的 `swapchain` 和 `framebuffer`
+
+我在想要不要跟着他的做……
+
+不过最后觉得还是一样的
+
+比如我一开始还是这样写
+
+```cpp
+    void EditorWindow::CreateSwapChian()
+    {
+        const vk::raii::Instance&       vulkan_instance = g_runtime_context.render_system->GetInstance();
+        const vk::raii::PhysicalDevice& physical_device = g_runtime_context.render_system->GetPhysicalDevice();
+        const vk::raii::Device&         logical_device  = g_runtime_context.render_system->GetLogicalDevice();
+        const uint32_t graphics_queue_family_index = g_runtime_context.render_system->GetGraphicsQueueFamiliyIndex();
+
+        m_igmui_window.Surface = *m_surface_data.surface;
+
+        m_igmui_window.SurfaceFormat = PickSurfaceFormat(physical_device.getSurfaceFormatsKHR(*m_surface_data.surface));
+        m_igmui_window.PresentMode   = static_cast<VkPresentModeKHR>(
+            PickPresentMode(physical_device.getSurfacePresentModesKHR(*m_surface_data.surface)));
+
+        ImGui_ImplVulkanH_CreateOrResizeWindow(**vulkan_instance,
+                                               **physical_device,
+                                               **logical_device,
+                                               &m_igmui_window,
+                                               graphics_queue_family_index,
+                                               nullptr,
+                                               m_surface_data.extent.width m_surface_data.extent.height,
+                                               k_max_frames_in_flight);
+    }
+```
+
+这样 `ImGui_ImplVulkanH_CreateOrResizeWindow` 会不会有什么特别的……
+
+进去看确实没有什么特别的
+
+那么唯一能够导致不同的确实就是， editor pass 不用 swapchain image 而是 imgui pass 来用 swapchain 
+
+于是还是需要重来
+
+## 改造
+
+传入 render pass 的用来制作 framebuffer 的 image
+
+之前是固定死 swapchain
+
+现在改成也可以传入任意的 image
+
+这样就方便我传入离屏渲染的 image
+
+vulkan 离屏渲染的纹理应该不需要准备跟 swapchain 一样的份数
+
+我先试试只用一个
+
+那么这就有一个问题
+
+之前的 render pass 都是因为 swapchain image 有多张，所以创建了多个 framebuffer
+
+那么现在离屏渲染的纹理只有一个
+
+离屏渲染的的 framebuffer 还需要多个吗？
+
+不需要了
+
+但是我又不想改现在的结构
+
+于是给现在的前向或者后向的 render pass 的 current_image_index 设为 0 就好了
+

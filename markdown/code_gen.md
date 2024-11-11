@@ -1,3 +1,82 @@
+# 代码生成
+
+## 代码生成器 Debug
+
+### clang_parseTranslationUnit debug
+
+于是发现之前我为什么添加了第三方库的 include 路径就会失败呢
+
+是因为我传入的 args 的数量我一直没有改，也就是说我传入三个参数，但是给的数字是 2，那就报错了
+
+现在就改好了
+
+### TryAddComponent debug
+
+`TryAddComponent` 里面的输出竟然是这样子的
+
+```cpp
+        template<typename TComponent>
+        std::weak_ptr<TComponent> TryAddComponent(std::shared_ptr<TComponent> component_ptr)
+        {
+#ifdef MEOW_DEBUG
+            if (!component_ptr)
+            {
+                RUNTIME_ERROR("shared ptr is invalid!");
+                return std::shared_ptr<TComponent>(nullptr);
+            }
+#endif
+
+            const std::string component_type_name = RemoveClassAndNamespace(typeid(TComponent).name());
+
+            // Check if a component of the same type already exists
+            for (const auto& refl_component : m_refl_components)
+            {
+                if (refl_component.type_name == component_type_name)
+                {
+                    RUNTIME_ERROR("Component already exists: {}", component_type_name);
+                    return std::shared_ptr<TComponent>(nullptr);
+                }
+            }
+
+            // Add the component to the container
+            m_refl_components.emplace_back(component_type_name, component_ptr);
+
+            RUNTIME_INFO("{} is added!", component_type_name.c_str());
+```
+
+输出
+
+```
+[14:05:22] RUNTIME: N4Meow20Transform3DComponentE is added!
+[14:05:22] RUNTIME: N4Meow17Camera3DComponentE is added!
+[14:05:22] RUNTIME: N4Meow20Transform3DComponentE is added!
+[14:05:22] RUNTIME: N4Meow14ModelComponentE is added!
+```
+
+太奇怪了……
+
+于是打算输出完整的
+
+```cpp
+            RUNTIME_INFO("typeid(TComponent).name() = {}", typeid(TComponent).name());
+            RUNTIME_INFO("{} is added!", component_type_name.c_str());
+```
+
+输出
+
+```
+[14:10:58] RUNTIME: typeid(TComponent).name() = N4Meow20Transform3DComponentE
+[14:10:58] RUNTIME: N4Meow20Transform3DComponentE is added!
+[14:10:58] RUNTIME: typeid(TComponent).name() = N4Meow17Camera3DComponentE
+[14:10:58] RUNTIME: N4Meow17Camera3DComponentE is added!
+[14:10:58] RUNTIME: typeid(TComponent).name() = N4Meow20Transform3DComponentE
+[14:10:58] RUNTIME: N4Meow20Transform3DComponentE is added!
+[14:10:59] RUNTIME: typeid(TComponent).name() = N4Meow14ModelComponentE
+[14:10:59] RUNTIME: N4Meow14ModelComponentE is added!
+```
+
+佛了，看来这个 `typeid(TComponent).name()` 的输出是依赖于编译器的，我不能依靠他来实现
+
 ## 代码生成器 Debug
 
 我改 Log 之后不知道为什么代码生成器总是有问题

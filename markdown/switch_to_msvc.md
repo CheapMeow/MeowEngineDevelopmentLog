@@ -1,3 +1,189 @@
+# 转到 msvc 编译器
+
+## 启动 exe 失败
+
+```shell
+ gdb --args E:\repository\MeowEngine\build-debug\src\code_generator\CodeGenerator.exe -IE:/repository/MeowEngine/src/code_generator/src -IE:/repository/MeowEngine/src/runtime -IE:/repository/MeowEngine/src/3rdparty/glm -IE:/repository/MeowEngine/src/3rdparty/glfw/include -IE:/repository/MeowEngine/src/3rdparty/volk -IE:/software/VulkanSDK/1.3.290.0/Include -IE:/repository/MeowEngine/src/3rdparty/SPIRV-Cross -IE:/repository/MeowEngine/src/3rdparty/stb -IE:/repository/MeowEngine/src/3rdparty/assimp/include -IE:/repository/MeowEngine/build-debug/src/3rdparty/assimp/include -IE:/repository/MeowEngine/src/3rdparty/imgui -SE:/repository/MeowEngine/src/runtime -OE:/repository/MeowEngine/src/runtime/generated
+```
+
+```
+(gdb) run
+Starting program: E:\repository\MeowEngine\build-debug\src\code_generator\CodeGenerator.exe -IE:/repository/MeowEngine/src/code_generator/src -IE:/repository/MeowEngine/src/runtime -IE:/repository/MeowEngine/src/3rdparty/glm -IE:/repository/MeowEngine/src/3rdparty/glfw/include -IE:/repository/MeowEngine/src/3rdparty/volk -IE:/software/VulkanSDK/1.3.290.0/Include -IE:/repository/MeowEngine/src/3rdparty/SPIRV-Cross -IE:/repository/MeowEngine/src/3rdparty/stb -IE:/repository/MeowEngine/src/3rdparty/assimp/include -IE:/repository/MeowEngine/build-debug/src/3rdparty/assimp/include -IE:/repository/MeowEngine/src/3rdparty/imgui -SE:/repository/MeowEngine/src/runtime -OE:/repository/MeowEngine/src/runtime/generated
+[New Thread 18060.0x51ec]
+[New Thread 18060.0x53f4]
+[New Thread 18060.0x94c]
+[Thread 18060.0x53f0 exited with code 3221225781]
+[Thread 18060.0x94c exited with code 3221225781]
+[Thread 18060.0x51ec exited with code 3221225781]
+During startup program exited with code 0xc0000135.
+```
+
+用 dependency walker 看了一下，似乎是 urt 库找不到
+
+![](../assets/dependency_walker_profile_code_generator.png)
+
+于是我加了一个 link
+
+```cmake
+target_link_directories(${CODE_GENERATOR_NAME} PUBLIC "C:/Program Files (x86)/Windows Kits/10/Redist/10.0.22621.0/ucrt/DLLs/x64")
+```
+
+也没有用
+
+于是用 msvc 编译
+
+```
+E:\software\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(254,5): error
+MSB8066: “E:\repository\MeowEngine\build-debug\CMakeFiles\2d671ee5f42a60e9a73b806408c44d60\register_all.cpp.rule;E:\rep
+ository\MeowEngine\build-debug\CMakeFiles\79af65e9bcaf32f02b60478ec74a6c9e\GenerateRegisterFile.rule;E:\repository\Meow
+Engine\src\code_generator\CMakeLists.txt”的自定义生成已退出，代码为 -1073741515。 [E:\repository\MeowEngine\build-debug\src\code_gene
+rator\GenerateRegisterFile.vcxproj]
+```
+
+也是这个 dll 找不到的问题
+
+所以这和编译器无关
+
+于是再上网查是为什么，查到了修复 Redistribution 的选项
+
+![alt text](../assets/repair_vc_redis.png)
+
+重启了之后，运行进程就会弹出缺少的 dll 了
+
+所以还是需要修复 Redistribution，然后才能正常报错
+
+## CodeGenerator DLL 缺失的问题
+
+又出现了这个问题
+
+```
+E:\repositories\MeowEngine\build-debug\src\code_generator\CodeGenerator.exe -IE:/repositories/MeowEngine/src/code_generator/src -IE:/repositories/MeowEngine/src/meow_runtime -IE:/repositories/MeowEngine/src/3rdparty/glm -IE:/repositories/MeowEngine/src/3rdparty/glfw/include -IE:/repositories/MeowEngine/src/3rdparty/volk -IE:/software/VulkanSDK/1.3.275.0/Include -IE:/repositories/MeowEngine/src/3rdparty/SPIRV-Cross -IE:/repositories/MeowEngine/src/3rdparty/stb -IE:/repositories/MeowEngine/src/3rdparty/assimp/include -IE:/repositories/MeowEngine/build-debug/src/3rdparty/assimp/include -IE:/repositories/MeowEngine/src/3rdparty/imgui -SE:/repositories/MeowEngine/src/meow_runtime -OE:/repositories/MeowEngine/src/meow_runtime/generated
+```
+
+会没有结果
+
+然后表现上看就是缺失了 dll
+
+网上搜到的解释都是说更改 lib 的 MTd
+
+但是问题是，它仅仅是一个 exe 啊，对任何我自己的 lib 都没有依赖啊
+
+于是还是用二分法来排除把
+
+原来的 CMakeLists.txt
+
+```cmake
+set(CODE_GENERATOR_HEADER_FILES
+    src/parser/parser.h
+    src/utils/code_gen_utils.h
+    src/parse_result/class_parse_result.h
+    src/parse_result/field_parse_result.h
+    src/parse_result/method_parse_result.h
+    src/generator/code_generator.h)
+set(CODE_GENERATOR_SOURCE_FILES
+    src/main.cpp
+    src/parser/parser.cpp
+    src/utils/code_gen_utils.cpp
+    src/generator/code_generator.cpp)
+
+set(HEADER_FILES_DEPEND
+<all_headers_place_holder>)
+
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${CODE_GENERATOR_HEADER_FILES}
+                                                      ${CODE_GENERATOR_SOURCE_FILES})
+
+add_executable(${CODE_GENERATOR_NAME} ${CODE_GENERATOR_HEADER_FILES} ${CODE_GENERATOR_SOURCE_FILES})
+
+find_package(Vulkan REQUIRED) # export vars
+
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${RUNTIME_DIR})
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/glm)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/glfw/include)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/volk)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${Vulkan_INCLUDE_DIRS})
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/SPIRV-Cross)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/stb)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/assimp/include)
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${CMAKE_BINARY_DIR}/src/3rdparty/assimp/include) # for config.h
+target_include_directories(${CODE_GENERATOR_NAME} PUBLIC ${3RD_PARTY_ROOT_DIR}/imgui)
+
+function(get_target_include_directories TARGET VAR_NAME)  
+    set(INCLUDE_DIRS "")  
+    get_target_property(TMP_DIRS ${TARGET} INCLUDE_DIRECTORIES)    
+    foreach(DIR ${TMP_DIRS})  
+        # If DIR is a generator expression, there will be no expansion here
+        # Here we assume they are direct paths 
+        list(APPEND INCLUDE_DIRS "-I${DIR}")  
+    endforeach()   
+    set(${VAR_NAME} "${INCLUDE_DIRS}" PARENT_SCOPE)  
+endfunction()  
+
+get_target_include_directories(${CODE_GENERATOR_NAME} INCLUDE_PATH_COLLECTION)  
+
+set_target_properties(${CODE_GENERATOR_NAME} PROPERTIES CXX_STANDARD 20)
+set_target_properties(${CODE_GENERATOR_NAME} PROPERTIES FOLDER "Engine")
+
+# being a cross-platform target, we enforce standards conformance on MSVC
+target_compile_options(${CODE_GENERATOR_NAME}
+                       PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/permissive->")
+target_compile_options(${CODE_GENERATOR_NAME}
+                       PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/WX->")
+
+target_link_libraries(${CODE_GENERATOR_NAME} PUBLIC $ENV{LLVM_DIR}/lib/libclang.lib)
+target_include_directories(${CODE_GENERATOR_NAME}
+                           PUBLIC $ENV{LLVM_DIR}/include)
+
+add_custom_command(
+    OUTPUT ${RUNTIME_DIR}/generated/register_all.cpp
+    COMMAND ${CODE_GENERATOR_NAME} ${INCLUDE_PATH_COLLECTION} "-S${RUNTIME_DIR}" "-O${RUNTIME_DIR}/generated"
+    DEPENDS ${HEADER_FILES_DEPEND}
+    COMMENT "Generating register_all.cpp"
+)
+add_custom_target(${GENERATED_FILE_TARGET_NAME}
+    DEPENDS ${RUNTIME_DIR}/generated/register_all.cpp
+)
+```
+
+现在把后面的都删掉
+
+```cmake
+set(CODE_GENERATOR_HEADER_FILES
+    src/parser/parser.h
+    src/utils/code_gen_utils.h
+    src/parse_result/class_parse_result.h
+    src/parse_result/field_parse_result.h
+    src/parse_result/method_parse_result.h
+    src/generator/code_generator.h)
+set(CODE_GENERATOR_SOURCE_FILES
+    src/main.cpp
+    src/parser/parser.cpp
+    src/utils/code_gen_utils.cpp
+    src/generator/code_generator.cpp)
+
+set(HEADER_FILES_DEPEND
+<all_headers_place_holder>)
+
+source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${CODE_GENERATOR_HEADER_FILES}
+                                                    ${CODE_GENERATOR_SOURCE_FILES})
+
+add_executable(${CODE_GENERATOR_NAME} ${CODE_GENERATOR_HEADER_FILES} ${CODE_GENERATOR_SOURCE_FILES})
+```
+
+于是结果是一样的。这也是合理的，include 不会影响什么
+
+那就是纯粹的代码上的问题？
+
+于是用了 [https://github.com/lucasg/Dependencies](https://github.com/lucasg/Dependencies)
+
+的工具，就没有这些问题了
+
+根据这里所说 [https://stackoverflow.com/questions/33969123/why-are-all-my-c-programs-exiting-with-0xc0000139](https://stackoverflow.com/questions/33969123/why-are-all-my-c-programs-exiting-with-0xc0000139)
+
+我确实用的 gcc 编译，于是把环境变量 mingw bin 的优先级调最高，也没用
+
+于是还是放弃 gcc，试试 msvc
+
 ## incomplete type
 
 ```cpp
