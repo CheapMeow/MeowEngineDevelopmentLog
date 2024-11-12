@@ -499,3 +499,240 @@ texture 是可以纹理映射的
 
 于是这就是 render target 了
 
+## vulkan validation error: invalid imageLayout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+ 
+```
+[MeowEngine][2024-11-11 19:57:41] Error: { Validation }:
+	messageIDName   = <VUID-VkWriteDescriptorSet-descriptorType-04150>
+	messageIdNumber = -148208968
+	message         = <Validation Error: [ VUID-VkWriteDescriptorSet-descriptorType-04150 ] Object 0: handle = 0xe7e6d0000000000f, type = VK_OBJECT_TYPE_IMAGE_VIEW; Object 1: handle = 0xcad092000000000d, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0xf72a82b8 | vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[0] Descriptor update with descriptorType VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER is being updated with invalid imageLayout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL for image VkImage 0xcad092000000000d[] in imageView VkImageView 0xe7e6d0000000000f[]. Allowed layouts are: VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL. The Vulkan spec states: If descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER the imageLayout member of each element of pImageInfo must be a member of the list given in Combined Image Sampler (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkWriteDescriptorSet-descriptorType-04150)>
+	Objects:
+		Object 0
+			objectType   = ImageView
+			objectHandle = 16710272165823381519
+		Object 1
+			objectType   = Image
+			objectHandle = 14614341319514914829
+
+```
+
+图像格式的问题
+
+创建 image 的时候可以改图像格式
+
+render pass 内部也会改图像格式
+
+deferred pass 里面把图像输出格式改成 `eShaderReadOnlyOptimal` 就好了
+
+## vulkan validation error: pAttachments[0] format is VK_FORMAT_B8G8R8A8_UNORM but initialLayout is VK_IMAGE_LAYOUT_UNDEFINED
+
+```
+[MeowEngine][2024-11-11 20:06:24] Error: { Validation }:
+	messageIDName   = <VUID-VkAttachmentDescription-format-06699>
+	messageIdNumber = 1387471518
+	message         = <Validation Error: [ VUID-VkAttachmentDescription-format-06699 ] | MessageID = 0x52b3229e | vkCreateRenderPass(): pCreateInfo->pAttachments[0] format is VK_FORMAT_B8G8R8A8_UNORM and loadOp is VK_ATTACHMENT_LOAD_OP_LOAD, but initialLayout is VK_IMAGE_LAYOUT_UNDEFINED. The Vulkan spec states: If format includes a color or depth component and loadOp is VK_ATTACHMENT_LOAD_OP_LOAD, then initialLayout must not be VK_IMAGE_LAYOUT_UNDEFINED (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkAttachmentDescription-format-06699)>
+
+```
+
+是 imgui pass 的问题
+
+```cpp
+    ImGuiPass::ImGuiPass(const vk::raii::PhysicalDevice& physical_device,
+                         const vk::raii::Device&         device,
+                         SurfaceData&                    surface_data,
+                         const vk::raii::CommandPool&    command_pool,
+                         const vk::raii::Queue&          queue,
+                         DescriptorAllocatorGrowable&    m_descriptor_allocator)
+        : RenderPass(device)
+    {
+        m_pass_name = "ImGui Pass";
+
+        vk::Format color_format =
+            PickSurfaceFormat((physical_device).getSurfaceFormatsKHR(*surface_data.surface)).format;
+        assert(color_format != vk::Format::eUndefined);
+
+        vk::AttachmentReference swapchain_attachment_reference(0, vk::ImageLayout::eColorAttachmentOptimal);
+
+        // swap chain attachment
+        vk::AttachmentDescription attachment_description(vk::AttachmentDescriptionFlags(), /* flags */
+                                                         color_format,                     /* format */
+                                                         vk::SampleCountFlagBits::e1,      /* samples */
+                                                         vk::AttachmentLoadOp::eLoad,      /* loadOp */
+                                                         vk::AttachmentStoreOp::eStore,    /* storeOp */
+                                                         vk::AttachmentLoadOp::eDontCare,  /* stencilLoadOp */
+                                                         vk::AttachmentStoreOp::eDontCare, /* stencilStoreOp */
+                                                         vk::ImageLayout::eUndefined,      /* initialLayout */
+                                                         vk::ImageLayout::ePresentSrcKHR); /* finalLayout */
+```
+
+改成
+
+```cpp
+vk::AttachmentLoadOp::eClear,     /* loadOp */
+```
+
+## vulkan validation error: invalid imageLayout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL 又出现
+
+```
+[MeowEngine][2024-11-11 20:21:18] Error: { Validation }:
+	messageIDName   = <VUID-VkWriteDescriptorSet-descriptorType-04150>
+	messageIdNumber = -148208968
+	message         = <Validation Error: [ VUID-VkWriteDescriptorSet-descriptorType-04150 ] Object 0: handle = 0xe7e6d0000000000f, type = VK_OBJECT_TYPE_IMAGE_VIEW; Object 1: handle = 0xcad092000000000d, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0xf72a82b8 | vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[0] Descriptor update with descriptorType VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER is being updated with invalid imageLayout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL for image VkImage 0xcad092000000000d[] in imageView VkImageView 0xe7e6d0000000000f[]. Allowed layouts are: VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL. The Vulkan spec states: If descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER the imageLayout member of each element of pImageInfo must be a member of the list given in Combined Image Sampler (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkWriteDescriptorSet-descriptorType-04150)>
+	Objects:
+		Object 0
+			objectType   = ImageView
+			objectHandle = 16710272165823381519
+		Object 1
+			objectType   = Image
+			objectHandle = 14614341319514914829
+```
+
+好吧我如果依靠 render pass 来转换的话，那么就会导致一开始不满足要求，后面才满足要求
+
+那么还不如一开始是 `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` 然后 deferred 里面为了第二个 pass 转成 `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` 然后第二个 pass结束时转成 `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`
+
+但是现在发现 render pass 对图像格式的转换是根据整个 render pass 的，subpass 不处理这个
+
+好吧
+
+那我直接
+
+```cpp
+    EditorDeferredPass::EditorDeferredPass(const vk::raii::PhysicalDevice& physical_device,
+                                           const vk::raii::Device&         device,
+                                           SurfaceData&                    surface_data,
+                                           const vk::raii::CommandPool&    command_pool,
+                                           const vk::raii::Queue&          queue,
+                                           DescriptorAllocatorGrowable&    m_descriptor_allocator)
+        : RenderPass(device)
+    {
+        m_pass_name = "Deferred Pass";
+
+        m_pass_names[0] = m_pass_name + " - Obj2Attachment Subpass";
+        m_pass_names[1] = m_pass_name + " - Quad Subpass";
+
+        // Create a set to store all information of attachments
+
+        vk::Format color_format =
+            PickSurfaceFormat((physical_device).getSurfaceFormatsKHR(*surface_data.surface)).format;
+        assert(color_format != vk::Format::eUndefined);
+
+        m_color_format = color_format;
+
+        std::vector<vk::AttachmentDescription> attachment_descriptions;
+        // swap chain attachment
+        attachment_descriptions.emplace_back(vk::AttachmentDescriptionFlags(),         /* flags */
+                                             color_format,                             /* format */
+                                             m_sample_count,                           /* samples */
+                                             vk::AttachmentLoadOp::eClear,             /* loadOp */
+                                             vk::AttachmentStoreOp::eStore,            /* storeOp */
+                                             vk::AttachmentLoadOp::eDontCare,          /* stencilLoadOp */
+                                             vk::AttachmentStoreOp::eDontCare,         /* stencilStoreOp */
+                                             vk::ImageLayout::eShaderReadOnlyOptimal,  /* initialLayout */
+                                             vk::ImageLayout::eShaderReadOnlyOptimal); /* finalLayout */
+```
+
+并且 render target 构建的时候就
+
+```cpp
+        // Transit Layout
+        OneTimeSubmit(device, command_pool, queue, [&](const vk::raii::CommandBuffer& command_buffer) {
+            image_data_ptr->SetImageLayout(
+                command_buffer, vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal);
+        });
+```
+
+这下似乎解决问题了
+
+## vulkan validation error: extent
+
+```
+[MeowEngine][2024-11-11 20:41:28] Error: { Validation }:
+	messageIDName   = <VUID-VkRenderPassBeginInfo-pNext-02852>
+	messageIdNumber = -617851033
+	message         = <Validation Error: [ VUID-VkRenderPassBeginInfo-pNext-02852 ] Object 0: handle = 0x27d60e0000000019, type = VK_OBJECT_TYPE_RENDER_PASS; Object 1: handle = 0x73a850000000004d, type = VK_OBJECT_TYPE_FRAMEBUFFER; | MessageID = 0xdb2c5767 | vkCmdBeginRenderPass(): pRenderPassBegin->renderArea offset.x (0) + extent.width (1080) is greater than framebuffer width (540). The Vulkan spec states: If the pNext chain does not contain VkDeviceGroupRenderPassBeginInfo or its deviceRenderAreaCount member is equal to 0, renderArea.offset.x + renderArea.extent.width must be less than or equal to VkFramebufferCreateInfo::width the framebuffer was created with (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkRenderPassBeginInfo-pNext-02852)>
+	Objects:
+		Object 0
+			objectType   = RenderPass
+			objectHandle = 2870497205658058777
+		Object 1
+			objectType   = Framebuffer
+			objectHandle = 8333999071379325005
+```
+
+是我 api 设计的问题
+
+```cpp
+    void RenderPass::Start(vk::raii::CommandBuffer const& command_buffer,
+                           Meow::SurfaceData const&       surface_data,
+                           uint32_t                       current_image_index)
+    {
+        FUNCTION_TIMER();
+
+        vk::RenderPassBeginInfo render_pass_begin_info(*render_pass,
+                                                       *framebuffers[current_image_index],
+                                                       vk::Rect2D(vk::Offset2D(0, 0), surface_data.extent),
+                                                       clear_values);
+        command_buffer.beginRenderPass(render_pass_begin_info, vk::SubpassContents::eInline);
+    }
+```
+
+`RenderPass` 的启动里面写死了是用 `surface_data` 的 extent
+
+实际上应该可以任意 extent
+
+## alpha 的问题
+
+我的附件和交换链图像的颜色格式都是 `VK_FORMAT_R8G8B8A8_UNORM`
+
+但是渲染出来的结果是，不渲染到 imgui 纹理的话就是正常的颜色，渲染的话就会变灰
+
+于是发现似乎是因为我的渲染结果的 alpha 都是 0.2，然后 imgui 纹理的 alpha 都是 1
+
+于是发现是我的 shader 里面写的有问题
+
+```glsl
+vec4 ambient  = vec4(0.20);
+```
+
+这个不对
+
+## 编译 ImGuiVulkanHppImage
+
+忘记之前是怎么编译的了
+
+删掉 msvc 识别不了的选项
+
+```cmake
+target_compile_options(${PROJECT_NAME} PRIVATE -Wall)
+```
+
+使用 cstdint 提供的定义
+
+```cpp
+#include <cstdint>
+
+#include "Log.h"
+
+using uint = std::uint32_t;
+```
+
+然后是 Debug 和 Release 不匹配
+
+```
+aderc_combined.lib(shaderc.obj) : error LNK2038: 检测到“_ITERATOR_DEBUG_LEVEL”的不匹配项: 值“0”不匹配值“2”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-release\ImGuiVulkanHppImage.vcxproj]
+shaderc_combined.lib(shaderc.obj) : error LNK2038: 检测到“RuntimeLibrary”的不匹配项: 值“MD_DynamicRelease”不匹配值“MDd_DynamicDebug”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-release\ImGuiVulkanHppImage.vcxproj]
+shaderc_combined.lib(compiler.obj) : error LNK2038: 检测到“_ITERATOR_DEBUG_LEVEL”的不匹配项: 值“0”不匹配值“2”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-release\ImGuiVulkanHppImage.vcxproj]
+shaderc_combined.lib(compiler.obj) : error LNK2038: 检测到“RuntimeLibrary”的不匹配项: 值“MD_DynamicRelease”不匹配值“MDd_DynamicDebug”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-release\ImGuiVulkanHppImage.vcxproj]
+...
+shaderc_combined.lib(loop_dependence_helpers.obj) : error LNK2038: 检测到“_ITERATOR_DEBUG_LEVEL”的不匹配项: 值“0”不匹配值“2”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-debug\ImGuiVulkanHppImage.vcxproj]
+shaderc_combined.lib(loop_dependence_helpers.obj) : error LNK2038: 检测到“RuntimeLibrary”的不匹配项: 值“MD_DynamicRelease”不匹配值“MDd_DynamicDebug”(Scene.obj 中) [E:\repositories\ImGuiVulkanHppImage\build-debug\ImGuiVulkanHppImage.vcxproj]
+LINK : warning LNK4098: 默认库“MSVCRT”与其他库的使用冲突；请使用 /NODEFAULTLIB:library [E:\repositories\ImGuiVulkanHppImage\build-debug\ImGuiVulkanHppImage.vcxproj]
+E:\repositories\ImGuiVulkanHppImage\build-debug\Debug\ImGuiVulkanHppImage.exe : fatal error LNK1319: 检测到 466 个不匹配项 [E:\repositories\ImGuiVulkanHppImage\build-debug\ImGuiVulkanHppImage.vcxproj]
+```
+
+很神奇，构建配置不应该传递到第三方库吗
+
+于是我设置 debug 构建还是有问题
+
+好吧，那我不指定构建设置，还是有问题
