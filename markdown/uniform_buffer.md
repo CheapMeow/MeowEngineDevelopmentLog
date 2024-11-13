@@ -145,7 +145,7 @@ N 个 object 对应 N 次 `vkCmdBindDescriptorSets` 和 draw，假设不考虑�
 
 这个 uniform buffer 确实不是这个场合
  
-uniform buffer 并不是为了减小 uniform buffer 的数量……本身之前对一个物体创建一个 uniform buffer 的做法就是错的
+uniform buffer 并不是为了减小 uniform buffer 的数量……本身之前对一个物体创建一个 uniform buffer 的做法就是，仅仅适用于少量物体的
 
 本身 uniform buffer 就是为了一个 buffer 用于多个物体
 
@@ -403,3 +403,81 @@ buffer_meta_iter->second.dynamic_offset_index = 0
 ```
 
 现在改好了，之前是 `new_memory_start = 0`
+
+## global uniform buffer 在干什么
+
+这个 global uniform buffer 为什么是把输入的数据再复制到自己那里？
+
+```cpp
+    void Material::SetGlobalUniformBuffer(const std::string& name, void* dataPtr, uint32_t size)
+    {
+        FUNCTION_TIMER();
+
+        auto buffer_meta_iter = shader_ptr->buffer_meta_map.find(name);
+        if (buffer_meta_iter == shader_ptr->buffer_meta_map.end())
+        {
+            MEOW_ERROR("Uniform {} not found.", name);
+            return;
+        }
+
+        if (buffer_meta_iter->second.bufferSize != size)
+        {
+            MEOW_WARN("Uniform {} size not match, dst={} src={}", name, buffer_meta_iter->second.bufferSize, size);
+        }
+
+        // store data into info class instance
+
+        auto global_uniform_buffer_info_iter = std::find_if(
+            global_uniform_buffer_infos.begin(), global_uniform_buffer_infos.end(), [&](auto& rhs) -> bool {
+                return rhs.dynamic_offset_index == buffer_meta_iter->second.dynamic_offset_index;
+            });
+
+        if (global_uniform_buffer_info_iter == global_uniform_buffer_infos.end())
+        {
+            GlobalUniformBufferInfo global_uniform_buffer_info;
+            global_uniform_buffer_info.dynamic_offset_index = buffer_meta_iter->second.dynamic_offset_index;
+            memcpy(global_uniform_buffer_info.data.data(), dataPtr, size);
+
+            global_uniform_buffer_infos.push_back(global_uniform_buffer_info);
+        }
+        else
+        {
+            memcpy(global_uniform_buffer_info_iter->data.data(), dataPtr, size);
+        }
+    }
+```
+
+假设先不管为什么还要复制
+
+`global_uniform_buffer_infos` 是怎么填充的？
+ 
+是先在 `buffer_meta_map` 里面找，找到了之后看看和 `global_uniform_buffer_infos` 里面存的偏移是不是一个东西
+
+## 他的加载逻辑
+
+可以设置 dynamic uniform 或者普通 uniform
+
+我现在才发现
+
+然后他似乎在同一个地方同时能够处理 dynamic 和 uniform 的
+
+但是这两个 offset 又混合在一起
+
+算了，放弃
+
+感觉这个直接写死了绑定的就是有问题
+
+于是看到别人说的是，要根据频率来更新不同的 set
+
+[https://www.reddit.com/r/vulkan/comments/avv808/multiple_descriptor_sets_vs_multiple_bindings_in/](https://www.reddit.com/r/vulkan/comments/avv808/multiple_descriptor_sets_vs_multiple_bindings_in/)
+
+原始文章
+
+[https://developer.nvidia.com/vulkan-shader-resource-binding](https://developer.nvidia.com/vulkan-shader-resource-binding)
+
+说得非常对啊……而我现在这个抄的这个算是粗暴的做法
+
+现在这个混合在一起的我确实看的很乱
+
+果然还是要根据这个来
+
