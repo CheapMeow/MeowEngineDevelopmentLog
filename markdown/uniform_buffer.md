@@ -1,5 +1,95 @@
 # uniform buffer
 
+## 环形缓冲类 Ring Buffer
+
+### 内存分配方法
+
+Ring buffer 内部存储一个 offset，记录已经分配的内存的数据量
+
+该数据量不一定是内存对齐值的整数倍
+
+从 Ring buffer 分配内存的时候，返回当前的 offset 的对齐之后的值作为分配的内存的首地址，同时 Ring buffer 内部存储的 offset 是这个首地址 + 分配的 size
+
+对齐的首地址 + 不一定是内存对齐值的整数倍的分配的 size，得到的值又不一定是内存对齐值的整数倍了
+
+如果新的 offset 超出了 Ring buffer 内部的数据区的长度，那么就不返回当前的 offset 的对齐之后的值，而是直接返回
+
+### 内存分配结构
+
+理想情况下，在一帧的末尾，ring buffer 对应于这一帧分配的内存的结构是
+
+```
+[...] 
+
+[global buffer] 
+
+[object 1 local buffer 1] [object 1 local buffer 2] [...] [object 1 local buffer n1] 
+
+[object 2 local buffer 1] [object 2 local buffer 2] [...] [object 2 local buffer n2] 
+
+[...]
+
+[object m local buffer 1] [object m local buffer 2] [...] [object m local buffer nm] 
+```
+
+实际内存是线性的，这里为了方便理解就做了换行
+
+因为你无法确定在这一帧提交 local uniform buffer 的顺序，而每次提交都会线性分配 ring buffer
+
+所以你只能保证 global uniform buffer 在所有 local uniform buffer 的前面，因为 global uniform buffer 是在这一帧开始之前就知道的；还有你可以确定序号小的 object 提交的 buffer 一定在序号大的 object 之前，其他的顺序无法保证
+
+### 内存分配记录
+
+所以你可能有
+
+```
+[...] [global buffer] [object 1 local buffer 3] [object 1 local buffer 1] [...] [object 2 local buffer 1] [object 2 local buffer 4] [...]
+```
+
+所以在后端，每一次提交时都要记录下当前分配的 ring buffer 首地址，最后提供给 `vkCmdBindDescriptorSets` 的 `pDynamicOffsets` 字段
+
+这个字段接受一个指针，指向一个存储 uniform buffer 偏移量的数组。对于我们的数据结构，就是存储 ring buffer 分配的内存的首地址的数组。
+
+也就是说，我们认为 `pDynamicOffsets` 指向的数组要存储所有 object 的 offset
+
+这个数组在每帧开始时清空，然后接受每一个 object 的 uniform buffer 对应的 offset
+
+因为这一个材质对应的所有 object 都共用同一个 shader，所以显然所有 object 的 uniform buffer 的 descriptor 的数量都是一样的
+
+所以如果这一帧有 N 个 object，每一个 object 的 uniform buffer 的 descriptor 的数量是 `dynamicOffsetCount` 那么 `pDynamicOffsets` 指向的数组的大小就是 `N * dynamicOffsetCount`
+
+在每一帧，这个数组的每个元素都必须分配到正确的偏移量，否则就说明对应的 uniform buffer 没有提交。
+
+当然，可以添加一个机制，为每一个 local uniform buffer 缓存最后一次提交的数据，如果这一帧没有提交对应的 local uniform buffer，那么就提交缓存。或者是提交缺省值。
+
+N 个 object 对应 N 次 `vkCmdBindDescriptorSets` 和 draw，假设不考虑优化。
+
+第 i 次 `vkCmdBindDescriptorSets` 需要传入 `pDynamicOffsets` 指向的数组的第 i 段区间，那么 `Material` 类需要对此进行封装
+
+是否能够将这个设计简化，现在我们 `pDynamicOffsets` 指向的数组不再是存储所有 object 的 offset，而仅仅是一个指向某一个 object 的所有 offset 的数组
+
+那么现在它的大小为 `dynamicOffsetCount`，不再是在 `BeginFrame` 中初始化，而是在 `BeginObject` 中初始化
+
+`vkCmdBindDescriptorSets` 的 `pDynamicOffsets` 字段接受的就直接是数组的首地址，而不需要计算某一个大数组的某个区间的首地址
+
+这样当然可以，但是因为不管是 `BeginFrame` 还是 `BeginObject`，都是在 render pass 启动之前的
+
+那么每一个 object 对应的 offset 数组都要缓存
+
+最后还是要做一个 `vector<vector<uint32_t>> per_obj_dynamic_offsets` 来存储每个物体在 ring buffer 上分配的内存的首地址
+
+但是这个 `per_obj_dynamic_offsets` 并不能直接传入 `vkCmdBindDescriptorSets` 的 `pDynamicOffsets` 字段
+
+因为可能存在一种情况：某一个 `Material` 并不需要绘制网格，而只是单纯的接受 uniform 输入并输出
+
+那么这时，外部并不会对这个 `Material` 类实例调用 `BeginObject()` `EndObject()`
+
+这时，`per_obj_dynamic_offsets` 为空，如果还坚持要将 `per_obj_dynamic_offsets` 的元素赋给`vkCmdBindDescriptorSets` 的 `pDynamicOffsets` 字段，就会出错
+
+所以应该有一个判断，当 `per_obj_dynamic_offsets` 为空时，给 `per_obj_dynamic_offsets` 添加一个元素，并且把 global 的 offset 复制进去
+
+这时，外部在绑定描述符集的时候直接传入 `obj_index = 0` 就好了
+
 ## 超内存限制了
 
 单独一个物体是正常的
@@ -27,7 +117,37 @@
 
 怪不得我会超出限制
 
-所以我做环形 uniform buffer 的目的是减小 uniform buffer 的数量
+所以我做环形 uniform buffer 的目的是减小 uniform buffer 的数量？
+
+不是
+
+## 为什么要用环形缓冲呢
+
+好吧我承认我没多想
+
+就是单纯看到博客就跟着做了
+
+实际上并不需要环形啊……
+
+因为你每一次分配内存肯定是，要一次把所有的数据都装到内存里
+
+那么你的环形缓冲的最大内存量肯定是要大于每一次需要的最大内存
+
+那么既然你的缓冲的大小都会大于每一次分配的内存大小了
+
+那么为什么还要环形
+
+直接每一次都复用那块内存就好了
+
+环形内存应该是用在尾部不断增长，头部随着需要可以删除，并且不希望不断分配内存的场景
+
+比如通信
+
+这个 uniform buffer 确实不是这个场合
+ 
+uniform buffer 并不是为了减小 uniform buffer 的数量……本身之前对一个物体创建一个 uniform buffer 的做法就是错的
+
+本身 uniform buffer 就是为了一个 buffer 用于多个物体
 
 ## Uniform Buffer offset debug
 
