@@ -37,3 +37,5 @@ Invalid VkDescriptorSet 0x5ef3070000000063[]. The Vulkan spec states: pDescripto
 ```
 
 `Remove` 的时候出了问题
+
+于是发现是我的 image 就是 raii 的，所以不用显式
