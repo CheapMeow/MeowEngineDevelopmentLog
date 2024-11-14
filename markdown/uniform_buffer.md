@@ -481,3 +481,20 @@ buffer_meta_iter->second.dynamic_offset_index = 0
 
 果然还是要根据这个来
 
+然后去找别人有没有写现成的
+
+看到一个人管理资源要处理很多依赖，还要考虑能不能合并成 subpass
+
+[https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/](https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/)
+
+这个确实好复杂啊
+
+完全没有做过这些东西，所以想象不到他的应用场合
+
+这里也提到了根据频率来渲染的
+
+[https://zeux.io/2020/02/27/writing-an-efficient-vulkan-renderer/](https://zeux.io/2020/02/27/writing-an-efficient-vulkan-renderer/)
+
+但是后面还有 bindless 的
+
+根据频率来渲染的他说劣势是 mipmap 之类的……？我也不太懂
