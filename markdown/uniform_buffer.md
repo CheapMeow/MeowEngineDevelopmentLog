@@ -805,3 +805,298 @@ void DeferredSubrender::Render(const CommandBuffer &commandBuffer) {
 那么这个就看上去很正常
 
 但是还是没有按照频率来更新啊
+
+fine，或许这些东西都是性能测量之后才需要做的事情
+
+现在回过来看的话，我的 descriptor 都是直接一次绑定所有
+
+所以我需要的也仅仅是单独绑定某些 set
+
+这就真的需要我自己约定了
+
+总之先试试
+
+## 再看 global uniform buffer
+
+这是加载数据
+
+```cpp
+    void Material::SetGlobalUniformBuffer(const std::string& name, void* dataPtr, uint32_t size)
+    {
+        FUNCTION_TIMER();
+
+        auto buffer_meta_iter = shader_ptr->buffer_meta_map.find(name);
+        if (buffer_meta_iter == shader_ptr->buffer_meta_map.end())
+        {
+            MEOW_ERROR("Uniform {} not found.", name);
+            return;
+        }
+
+        if (buffer_meta_iter->second.bufferSize != size)
+        {
+            MEOW_WARN("Uniform {} size not match, dst={} src={}", name, buffer_meta_iter->second.bufferSize, size);
+        }
+
+        // store data into info class instance
+
+        auto global_uniform_buffer_info_iter = std::find_if(
+            global_uniform_buffer_infos.begin(), global_uniform_buffer_infos.end(), [&](auto& rhs) -> bool {
+                return rhs.dynamic_offset_index == buffer_meta_iter->second.dynamic_offset_index;
+            });
+
+        if (global_uniform_buffer_info_iter == global_uniform_buffer_infos.end())
+        {
+            GlobalUniformBufferInfo global_uniform_buffer_info;
+            global_uniform_buffer_info.dynamic_offset_index = buffer_meta_iter->second.dynamic_offset_index;
+            memcpy(global_uniform_buffer_info.data.data(), dataPtr, size);
+
+            global_uniform_buffer_infos.push_back(global_uniform_buffer_info);
+        }
+        else
+        {
+            memcpy(global_uniform_buffer_info_iter->data.data(), dataPtr, size);
+        }
+    }
+```
+
+这是在渲染之前的事情，把数据先自己存起来
+
+渲染帧开始时，把存着的全局 uniform 数据存到 uniform 缓冲里面
+
+```cpp
+    void Material::BeginFrame()
+    {
+        FUNCTION_TIMER();
+
+        if (actived)
+        {
+            return;
+        }
+        actived = true;
+
+        // clear per obj data
+
+        obj_count = 0;
+        per_obj_dynamic_offsets.clear();
+
+        // copy global uniform buffer data to ring buffer
+
+        // global uniform buffer should be set before BeginFrame() is called
+        // so copy global uniform buffer to ring buffer here
+        // then it does not need to copy global uniform buffer later during this frame
+
+        for (auto& global_uniform_buffer_info : global_uniform_buffer_infos)
+        {
+            uint8_t* ringCPUData = (uint8_t*)(ring_buffer.mapped_data_ptr);
+            uint64_t bufferSize  = global_uniform_buffer_info.data.size();
+            uint64_t ringOffset  = ring_buffer.AllocateMemory(bufferSize);
+
+            memcpy(ringCPUData + ringOffset, global_uniform_buffer_info.data.data(), bufferSize);
+
+            global_uniform_buffer_info.dynamic_offset = (uint32_t)ringOffset;
+        }
+    }
+```
+
+得到的 offset 只需要在这里一次了
+
+这是对每一个物体都加载那个 global uniform buffer 的位置
+
+```cpp
+    void Material::BeginObject()
+    {
+        FUNCTION_TIMER();
+
+        per_obj_dynamic_offsets.push_back(
+            std::vector<uint32_t>(shader_ptr->uniform_buffer_count, std::numeric_limits<uint32_t>::max()));
+
+        // copy global uniform buffer offset
+
+        for (auto& global_uniform_buffer_info : global_uniform_buffer_infos)
+        {
+            per_obj_dynamic_offsets[obj_count][global_uniform_buffer_info.dynamic_offset_index] =
+                global_uniform_buffer_info.dynamic_offset;
+        }
+    }
+```
+
+这是如果没有位置的时候，那么就只有全局 uniform
+
+```cpp
+    void Material::EndFrame()
+    {
+        FUNCTION_TIMER();
+
+        actived = false;
+
+        // if no object
+        // all elements of per_obj_dynamic_offsets[0] are global uniform buffer offset
+
+        if (per_obj_dynamic_offsets.size() == 0)
+        {
+            per_obj_dynamic_offsets.push_back(
+                std::vector<uint32_t>(shader_ptr->uniform_buffer_count, std::numeric_limits<uint32_t>::max()));
+
+            // copy global uniform buffer offset
+
+            for (auto& global_uniform_buffer_info : global_uniform_buffer_infos)
+            {
+                per_obj_dynamic_offsets[0][global_uniform_buffer_info.dynamic_offset_index] =
+                    global_uniform_buffer_info.dynamic_offset;
+            }
+        }
+    }
+```
+
+所以这个和 dynamic 的 uniform 混合的方法还是，需要一段时间理解
+
+之前我懂了，现在还是需要时间再想
+
+然后想想还是不符合
+
+于是删了
+
+## 单独处理 uniform buffer
+
+shader 里面要特别处理哪些是 dynamic
+
+```cpp
+    void Shader::GetUniformBuffersMeta(spirv_cross::Compiler&        compiler,
+                                       spirv_cross::ShaderResources& resources,
+                                       vk::ShaderStageFlags          stageFlags)
+    {
+        for (int32_t i = 0; i < resources.uniform_buffers.size(); ++i)
+        {
+            spirv_cross::Resource& res                        = resources.uniform_buffers[i];
+            spirv_cross::SPIRType  type                       = compiler.get_type(res.type_id);
+            spirv_cross::SPIRType  base_type                  = compiler.get_type(res.base_type_id);
+            const std::string&     var_name                   = compiler.get_name(res.id);
+            const std::string&     type_name                  = compiler.get_name(res.base_type_id);
+            uint32_t               uniform_buffer_struct_size = (uint32_t)compiler.get_declared_struct_size(type);
+
+            uint32_t set     = compiler.get_decoration(res.id, spv::DecorationDescriptorSet);
+            uint32_t binding = compiler.get_decoration(res.id, spv::DecorationBinding);
+
+            vk::DescriptorSetLayoutBinding set_layout_binding {binding,
+                                                               (type_name.find("Dynamic") != std::string::npos) ?
+                                                                   vk::DescriptorType::eUniformBufferDynamic :
+                                                                   vk::DescriptorType::eUniformBuffer,
+                                                               1,
+                                                               stageFlags,
+                                                               nullptr};
+```
+
+然后生成 uniform buffer 的 dynamic offset 时
+
+加上 `if (descriptor_layout_binding.descriptorType == vk::DescriptorType::eUniformBufferDynamic)` 的条件判断
+
+而不像之前那样直接认为所有的 uniform buffer 都是 dynamic
+
+```cpp
+    void Shader::GenerateDynamicUniformBufferOffset()
+    {
+        // metas has been sort acrroding to
+        std::vector<DescriptorSetLayoutMeta>& metas = set_layout_metas.metas;
+
+        // set uniform buffer offset index
+        // for the use of dynamic uniform buffer
+        // the offset index is related about set and binding
+        // so it is wrong to iterate like:
+        // for (auto& buffer_meta : buffer_meta_map)
+        // instead, use double layer looping
+
+        uniform_buffer_count = 0;
+        for (auto& meta : metas)
+        {
+            for (auto& descriptor_layout_binding : meta.bindings)
+            {
+                if (descriptor_layout_binding.descriptorType == vk::DescriptorType::eUniformBufferDynamic)
+                {
+                    for (auto& buffer_meta : buffer_meta_map)
+                    {
+                        if (buffer_meta.second.set == meta.set &&
+                            buffer_meta.second.binding == descriptor_layout_binding.binding &&
+                            buffer_meta.second.descriptorType == descriptor_layout_binding.descriptorType &&
+                            buffer_meta.second.stageFlags == descriptor_layout_binding.stageFlags)
+                        {
+                            buffer_meta.second.dynamic_offset_index = uniform_buffer_count;
+                            uniform_buffer_count += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+```
+
+这个 `dynamic_offset_index` 并不是 vulkan 的，而是用来记录当前这个 dynamic uniform buffer 在所有的 dynamic uniform buffer 中排第几个
+
+它的使用就是
+
+```cpp
+    void Material::PopulateDynamicUniformBuffer(const std::string& name, void* dataPtr, uint32_t size)
+    {
+        FUNCTION_TIMER();
+
+        auto buffer_meta_iter = shader_ptr->buffer_meta_map.find(name);
+        if (buffer_meta_iter == shader_ptr->buffer_meta_map.end())
+        {
+            MEOW_ERROR("Uniform {} not found.", name);
+            return;
+        }
+
+        if (buffer_meta_iter->second.bufferSize != size)
+        {
+            MEOW_WARN("Uniform {} size not match, dst={} src={}", name, buffer_meta_iter->second.bufferSize, size);
+        }
+
+        // copy local uniform buffer to ring buffer
+
+        uint8_t* ringCPUData = (uint8_t*)(ring_buffer.mapped_data_ptr);
+        uint64_t bufferSize  = buffer_meta_iter->second.bufferSize;
+        uint64_t ringOffset  = ring_buffer.AllocateMemory(bufferSize);
+
+        memcpy(ringCPUData + ringOffset, dataPtr, bufferSize);
+
+        per_obj_dynamic_offsets[obj_count][buffer_meta_iter->second.dynamic_offset_index] = (uint32_t)ringOffset;
+    }
+```
+
+的
+
+`per_obj_dynamic_offsets[obj_count][buffer_meta_iter->second.dynamic_offset_index] = (uint32_t)ringOffset;` 这里
+
+这个每个物体的 offsets 最终的使用是
+
+```cpp
+    void Material::BindAllDescriptorSets(vk::raii::CommandBuffer const& command_buffer, int32_t obj_index)
+    {
+        FUNCTION_TIMER();
+
+        if (obj_index >= per_obj_dynamic_offsets.size())
+        {
+            return;
+        }
+
+        command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                          *shader_ptr->pipeline_layout,
+                                          0,
+                                          descriptor_sets,
+                                          per_obj_dynamic_offsets[obj_index]);
+    }
+```
+
+也就是说 vulkan 对于多个 dynamic uniform buffer 的使用就是这样的
+
+`per_obj_dynamic_offsets[obj_index]` 的大小就是这个 shader 所有的 dynamic uniform buffer 的数量
+
+根据规范
+
+[https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#descriptorsets-binding]
+
+> If any of the sets being bound include dynamic uniform or storage buffers, then pDynamicOffsets includes one element for each array element in each dynamic descriptor type binding in each set. Values are taken from pDynamicOffsets in an order such that all entries for set N come before set N+1; within a set, entries are ordered by the binding numbers in the descriptor set layouts; and within a binding array, elements are in order. dynamicOffsetCount must equal the total number of dynamic descriptors in the sets being bound.
+
+他的意思就是，`pDynamicOffsets` 的取法是，多个集合之间，根据 `set` 从小到大排序，集合内根据 `binding` 从小到大排序
+
+所以我们生成 `dynamic_offset_index` 也是这个顺序
