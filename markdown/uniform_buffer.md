@@ -1100,3 +1100,730 @@ shader 里面要特别处理哪些是 dynamic
 他的意思就是，`pDynamicOffsets` 的取法是，多个集合之间，根据 `set` 从小到大排序，集合内根据 `binding` 从小到大排序
 
 所以我们生成 `dynamic_offset_index` 也是这个顺序
+
+## 在 material 外面负责 bind descriptor
+
+之前就是，我自动在 material 内绑定了 uniform buffer
+
+```cpp
+        // bind ring buffer to descriptor set
+        // There are two parts about binding resources to descriptor set
+        // One is binding ring buffer. It is known by Material class, so it is done in Material ctor
+        // The second is other's binding, such as image. It is done outside of Material ctor
+
+        for (auto it = shader_ptr->buffer_meta_map.begin(); it != shader_ptr->buffer_meta_map.end(); ++it)
+        {
+            if (it->second.descriptorType == vk::DescriptorType::eUniformBuffer ||
+                it->second.descriptorType == vk::DescriptorType::eUniformBufferDynamic)
+            {
+                shader_ptr->SetBuffer(
+                    logical_device, it->first, ring_buffer.buffer_data_ptr->buffer, it->second.bufferSize);
+            }
+        }
+```
+
+然后 image 那些在外部绑定
+
+最后还有一个对全体 descriptor 绑定的，但是他仅仅是为了 dynamic uniform buffer 一个人而绑定所有……
+
+现在想想确实混乱了
+
+还不如直接全部在外面绑定
+
+并且如果要根据频率绑定的话
+
+也是在外面决定的
+
+那么 material 就剩下创建 pipeline 和绑定 dynamic uniform buffer 的 offset 这一个作用了
+
+接口方面会有一些问题，比如我的 SetBuffer 是默认 whole size 的
+
+```cpp
+    void Shader::SetBuffer(const vk::raii::Device&     logical_device,
+                           const std::string&          name,
+                           const vk::raii::Buffer&     buffer,
+                           vk::DeviceSize              range,
+                           const vk::raii::BufferView* raii_buffer_view)
+    {
+        auto it = set_layout_metas.binding_meta_map.find(name);
+        if (it == set_layout_metas.binding_meta_map.end())
+        {
+            MEOW_ERROR("Failed write buffer, {} not found!", name);
+            return;
+        }
+
+        auto bindInfo = it->second;
+
+        // Default is offset = 0, buffer size = whole size
+        // Maybe it needs to be configurable?
+        vk::DescriptorBufferInfo descriptor_buffer_info(*buffer, 0, range);
+```
+
+但是之前都是直接查找 size 的 `it->second.bufferSize`
+
+于是这个完全可以在 shader 里面查找到
+
+于是改成
+
+```cpp
+    void Shader::SetBuffer(const vk::raii::Device&     logical_device,
+                           const std::string&          name,
+                           const vk::raii::Buffer&     buffer,
+                           vk::DeviceSize              range,
+                           const vk::raii::BufferView* raii_buffer_view)
+    {
+        auto it = set_layout_metas.binding_meta_map.find(name);
+        if (it == set_layout_metas.binding_meta_map.end())
+        {
+            MEOW_ERROR("Failed write buffer, {} not found!", name);
+            return;
+        }
+
+        auto bindInfo = it->second;
+
+        // If it is dynamic uniform buffer, then the buffer passed into can not use whole size
+        for (auto it = buffer_meta_map.begin(); it != buffer_meta_map.end(); ++it)
+        {
+            if (it->first == name)
+            {
+                if (it->second.descriptorType == vk::DescriptorType::eUniformBufferDynamic)
+                {
+                    range = it->second.bufferSize;
+                }
+            }
+        }
+        vk::DescriptorBufferInfo descriptor_buffer_info(*buffer, 0, range);
+```
+
+然后 bug 是跟我说
+
+```cpp
+    uint64_t UniformBuffer::Populate(void* src, uint64_t size)
+    {
+        uint64_t new_memory_start = AllocateMemory(size);
+
+        memcpy(mapped_data_ptr + new_memory_start, src, size);
+
+        return new_memory_start;
+    }
+```
+
+这个 void* 是未知的大小
+
+确实……他可能原始指针是 float 或者 double 之类的，那么地址偏移会不一样
+
+## 新 uniform buffer 的 bug
+
+```
+[MeowEngine][2024-11-16 10:07:39] Failed write buffer, lightDatas not found!
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength(ERROR / SPEC): msgNum: 1501678779 - Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)
+    Objects: 0
+VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359(ERROR / SPEC): msgNum: -2106233772 - Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)
+    Objects: 1
+        [0] 0x2c00555e1d0, type: 6, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x9f9b41000000003c, type: 19, name: NULL
+        [1] 0x944a2c0000000039, type: 17, name: NULL
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength>
+	messageIdNumber = 1501678779
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength ] | MessageID = 0x5981ccbb | vkCmdBindDescriptorSets(): descriptorSetCount must be greater than 0. The Vulkan spec states: descriptorSetCount must be greater than 0 (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-descriptorSetCount-arraylength)>
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359>
+	messageIdNumber = -2106233772
+	message         = <Validation Error: [ VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359 ] Object 0: handle = 0x2c00555e1d0, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0x82756c54 | vkCmdBindDescriptorSets():  Attempting to bind 0 descriptorSets with 0 dynamic descriptors, but dynamicOffsetCount is 1. It should exactly match the number of dynamic descriptors. The Vulkan spec states: dynamicOffsetCount must be equal to the total number of dynamic descriptors in pDescriptorSets (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdBindDescriptorSets-dynamicOffsetCount-00359)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 3023746490832
+
+[MeowEngine][2024-11-16 10:07:44] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x9f9b41000000003c, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x944a2c0000000039, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0x9f9b41000000003c[] (created with VkPipelineLayout 0x944a2c0000000039[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x944a2c0000000039[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 11500857541676499004
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10685401444401545273
+```
+
+看上去是我没有 dynamic descriptor
+
+于是在这 debug
+
+```cpp
+    void ForwardPass::DrawOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        std::shared_ptr<Level> level_ptr           = g_runtime_context.level_system->GetCurrentActiveLevel().lock();
+        const auto&            all_gameobjects_map = level_ptr->GetAllVisibles();
+        for (const auto& kv : all_gameobjects_map)
+        {
+            std::shared_ptr<GameObject>     model_go_ptr = kv.second.lock();
+            std::shared_ptr<ModelComponent> model_comp_ptr =
+                model_go_ptr->TryGetComponent<ModelComponent>("ModelComponent");
+
+            if (!model_comp_ptr)
+                continue;
+
+            for (int32_t i = 0; i < model_comp_ptr->model_ptr.lock()->meshes.size(); ++i)
+            {
+                m_forward_mat.BindDynamicUniformPerObject(command_buffer, "uboMVP", draw_call);
+```
+
+发现居然报错
+
+```
+[MeowEngine][2024-11-16 10:12:34] Failed write buffer, lightDatas not found!
+```
+
+但是这是 forward 不应该 write 这个的
+
+哦，记起来了，是我之前的地方没有改
+
+```cpp
+        m_obj2attachment_mat.GetShader()->SetBuffer(device, "lightDatas", m_light_data_uniform_buffer->buffer);
+        m_quad_mat.GetShader()->SetBuffer(device, "lightDatas", m_light_data_uniform_buffer->buffer);
+```
+
+应该是
+
+```cpp
+        m_obj2attachment_mat.GetShader()->SetBuffer(device, "uboMVP", m_dynamic_uniform_buffer->buffer);
+        m_quad_mat.GetShader()->SetBuffer(device, "lightDatas", m_light_data_uniform_buffer->buffer);
+```
+
+然后就发现确实我在 forward 里面少了 `SetBuffer`
+
+于是补充
+
+```cpp
+    void ForwardPass::CreateMaterial(const vk::raii::PhysicalDevice& physical_device,
+                                     const vk::raii::Device&         device,
+                                     DescriptorAllocatorGrowable&    m_descriptor_allocator)
+    {
+        auto mesh_shader_ptr = std::make_shared<Shader>(physical_device,
+                                                        device,
+                                                        m_descriptor_allocator,
+                                                        "builtin/shaders/mesh.vert.spv",
+                                                        "builtin/shaders/mesh.frag.spv");
+
+        m_forward_mat = Material(physical_device, device, mesh_shader_ptr);
+        m_forward_mat.CreatePipeline(device, render_pass, vk::FrontFace::eClockwise, true);
+
+        input_vertex_attributes = m_forward_mat.shader_ptr->per_vertex_attributes;
+
+        m_dynamic_uniform_buffer = std::make_shared<UniformBuffer>(physical_device,
+                                                                   device,
+                                                                   32 * 1024,
+                                                                   vk::BufferUsageFlagBits::eUniformBuffer |
+                                                                       vk::BufferUsageFlagBits::eTransferDst);
+
+        m_forward_mat.GetShader()->SetBuffer(device, "uboMVP", m_dynamic_uniform_buffer->buffer);
+    }
+```
+
+然后又记起来，现在我不希望 material 拥有 descriptor 了
+
+descriptor 应该是 shader 负责的
+
+但是旧代码有一个函数还是从 material 那里取 descriptor 来绑定
+
+可能是这个函数的问题，所以他报错说绑定的 descriptor 为 0
+
+参考
+
+```cpp
+    void ForwardPass::DrawOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        std::shared_ptr<Level> level_ptr           = g_runtime_context.level_system->GetCurrentActiveLevel().lock();
+        const auto&            all_gameobjects_map = level_ptr->GetAllVisibles();
+        for (const auto& kv : all_gameobjects_map)
+        {
+            std::shared_ptr<GameObject>     model_go_ptr = kv.second.lock();
+            std::shared_ptr<ModelComponent> model_comp_ptr =
+                model_go_ptr->TryGetComponent<ModelComponent>("ModelComponent");
+
+            if (!model_comp_ptr)
+                continue;
+
+            for (int32_t i = 0; i < model_comp_ptr->model_ptr.lock()->meshes.size(); ++i)
+            {
+                m_forward_mat.BindDynamicUniformPerObject(command_buffer, "uboMVP", draw_call);
+                model_comp_ptr->model_ptr.lock()->meshes[i]->BindDrawCmd(command_buffer);
+
+                ++draw_call;
+            }
+        }
+    }
+```
+
+```cpp
+    void Material::BindDynamicUniformPerObject(const vk::raii::CommandBuffer& command_buffer,
+                                               const std::string&             name,
+                                               int32_t                        obj_index)
+    {
+        FUNCTION_TIMER();
+
+        if (obj_index >= per_obj_dynamic_offsets.size())
+        {
+            return;
+        }
+
+        command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                          *shader_ptr->pipeline_layout,
+                                          0,
+                                          descriptor_sets,
+                                          per_obj_dynamic_offsets[obj_index]);
+    }
+```
+
+确实是这个函数的问题
+
+我当时想着改来着但是还没做完
+
+因为本来是要 `shader_ptr->SetBuffer()` 来着
+
+但是我这个接口没有接受 dynamic 参数的地方
+
+因为 set buffer 他是调用 `logical_device.updateDescriptorSets`
+
+但是更新 descriptor……
+
+坏了，我以前一直以为我的 set 和我的 update 是类似的，原来不是
+
+`logical_device.updateDescriptorSets` 是用来绑定资源的
+
+`command_buffer.bindDescriptorSets` 是用来更新资源的
+
+看上去很反常识
+
+查找整个代码库，确实只有我这一个 material 的地方用了 `command_buffer.bindDescriptorSets`
+
+然后改成了 shader 的接口
+
+然后仍然是 `dynamic_seq` 越界
+
+```cpp
+    void Material::PopulateDynamicUniformBuffer(std::shared_ptr<UniformBuffer> buffer,
+                                                const std::string&             name,
+                                                void*                          dataPtr,
+                                                uint32_t                       size)
+    {
+        FUNCTION_TIMER();
+
+        auto it = shader_ptr->buffer_meta_map.find(name);
+        if (it == shader_ptr->buffer_meta_map.end())
+        {
+            MEOW_ERROR("Uniform {} not found.", name);
+            return;
+        }
+
+        if (it->second.size != size)
+        {
+            MEOW_WARN("Uniform {} size not match, dst={} src={}", name, it->second.size, size);
+        }
+
+        per_obj_dynamic_offsets[obj_count][it->second.dynamic_seq] =
+            static_cast<uint32_t>(buffer->Populate(dataPtr, it->second.size));
+    }
+```
+
+看上去是 dynamic 又识别不到
+
+但是对 deferred 的 shader debug 的话又可以看到 map 里面是有的
+
+于是看看是不是 push 错了
+
+```cpp
+    void Material::BeginPopulatingDynamicUniformBufferPerObject()
+    {
+        FUNCTION_TIMER();
+
+        per_obj_dynamic_offsets.push_back(
+            std::vector<uint32_t>(shader_ptr->dynamic_uniform_buffer_count, std::numeric_limits<uint32_t>::max()));
+    }
+```
+
+好吧，这个时候的 `shader_ptr->dynamic_uniform_buffer_count` 是 0
+
+哦，记起来了，灯光不是 uniform dynamic
+
+```cpp
+        m_quad_mat.BeginPopulatingDynamicUniformBufferPerFrame();
+        m_quad_mat.BeginPopulatingDynamicUniformBufferPerObject();
+        m_quad_mat.PopulateDynamicUniformBuffer(
+            m_dynamic_uniform_buffer, "lightDatas", &m_LightDatas, sizeof(m_LightDatas));
+        m_quad_mat.EndPopulatingDynamicUniformBufferPerObject();
+        m_quad_mat.EndPopulatingDynamicUniformBufferPerFrame();
+```
+
+所以这一段是不必要的
+
+改成
+
+```cpp
+        m_dynamic_uniform_buffer->Reset();
+        m_dynamic_uniform_buffer->Populate(&m_LightDatas, sizeof(m_LightDatas));
+```
+
+然后是异常
+
+```
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0xb097c90000000027, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0xb097c90000000027[] (created with VkPipelineLayout 0xb991fa0000000024[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x0[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 1
+        [0] 0xb097c90000000027, type: 19, name: NULL
+[MeowEngine][2024-11-16 16:03:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0xb097c90000000027, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0xb097c90000000027[] (created with VkPipelineLayout 0xb991fa0000000024[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x0[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 12724860273995808807
+
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0xb097c90000000027, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x908683000000001d, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0xb097c90000000027[] (created with VkPipelineLayout 0xb991fa0000000024[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x908683000000001d[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0xb097c90000000027, type: 19, name: NULL
+        [1] 0x908683000000001d, type: 17, name: NULL
+[MeowEngine][2024-11-16 16:03:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0xb097c90000000027, type = VK_OBJECT_TYPE_PIPELINE; Object 1: handle = 0x908683000000001d, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  The VkPipeline 0xb097c90000000027[] (created with VkPipelineLayout 0xb991fa0000000024[]) statically uses descriptor set (index #0) which is not compatible with the currently bound descriptor set's pipeline layout (VkPipelineLayout 0x908683000000001d[]). The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = Pipeline
+			objectHandle = 12724860273995808807
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 10414155224364089373
+```
+
+这个我理解了……就是我上一个材质的绑定的 descriptor set 和我现在的冲突了
+
+或许应用程序内部可以维护一个东西，记录每一个 set 和 binding 都绑定的是什么东西，和 shader 的 pipeline 兼不兼容
+
+但是这个暂时先这样吧
