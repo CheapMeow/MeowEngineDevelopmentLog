@@ -88,3 +88,39 @@
 但是对于这种把数据存到 mtl 的，完全读不到啊
 
 于是为了做出效果，这些东西还是之后做把
+
+看了别人说的
+
+[https://stackoverflow.com/questions/16134605/assimp-does-not-import-textures](https://stackoverflow.com/questions/16134605/assimp-does-not-import-textures)
+
+[https://www.reddit.com/r/GraphicsProgramming/comments/fl37tc/assimp_doesnt_like_blender_obj_files/](https://www.reddit.com/r/GraphicsProgramming/comments/fl37tc/assimp_doesnt_like_blender_obj_files/)
+
+我看了一下我的 mtl 文件，看上去非常正常啊
+
+但是就是得不到纹理
+
+于是看到了 `ReadFileFromMemory` 的注释
+
+> This is a straightforward way to decode models from memory buffers, but it doesn't handle model formats that spread their data across multiple files or even directories. Examples include OBJ or MD3, which outsource parts of their material info into external scripts. If you need full functionality, provide a custom IOSystem to make Assimp find these files and use the regular ReadFile() API.
+
+所以我应该用一个带有 IO 的函数
+
+```cpp
+        Assimp::Importer importer;
+        const aiScene*   scene = importer.ReadFileFromMemory((void*)data_ptr, data_size, assimpFlags);
+```
+
+现在换成
+
+```cpp
+        Assimp::Importer importer;
+        const aiScene*   scene =
+            importer.ReadFile(g_runtime_context.file_system->GetAbsolutePath(file_path), assimpFlags);
+        if (scene == nullptr)
+        {
+            MEOW_ERROR("Read model file {} failed!", file_path);
+            return;
+        }
+```
+
+就好了
