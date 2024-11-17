@@ -1908,3 +1908,17 @@ VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation E
 ```
 
 这个 buffer 用错了
+
+## dynamic uniform buffer 全为相同的值
+
+发现我的延迟渲染的结果是大部分东西都看不到
+
+但是前向渲染就可以看到
+
+开了 render doc 发现是延迟渲染的 ubo 都是相同的值
+
+前向渲染的 ubo 都是正常的值
+
+难道是我的前向渲染的 populate 没问题，而延迟渲染的有问题？
+
+好的……原来是我 reset 放错位置了
