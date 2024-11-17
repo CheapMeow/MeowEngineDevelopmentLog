@@ -1827,3 +1827,84 @@ VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation E
 或许应用程序内部可以维护一个东西，记录每一个 set 和 binding 都绑定的是什么东西，和 shader 的 pipeline 兼不兼容
 
 但是这个暂时先这样吧
+
+于是发现我的问题是第二个 subpass 绑错了
+
+```cpp
+    void DeferredPass::DrawQuadOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        for (int32_t i = 0; i < m_quad_model.meshes.size(); ++i)
+        {
+            m_quad_mat.UpdateDynamicUniformPerObject(command_buffer, "uboMVP", draw_call[1]);
+            m_quad_model.meshes[i]->BindDrawCmd(command_buffer);
+
+            ++draw_call[1];
+        }
+    }
+```
+
+这里不是绑 MVP
+
+之前创建的时候绑 lightdata 也错
+
+```cpp
+    void DeferredPass::CreateMaterial(const vk::raii::PhysicalDevice& physical_device,
+                                      const vk::raii::Device&         device,
+                                      const vk::raii::CommandPool&    command_pool,
+                                      const vk::raii::Queue&          queue,
+                                      DescriptorAllocatorGrowable&    m_descriptor_allocator)
+    {
+        ...
+
+        OneTimeSubmit(device, command_pool, queue, [&](vk::raii::CommandBuffer& command_buffer) {
+            m_quad_mat.GetShader()->BindUniformBufferToPipeline(command_buffer, "lightDatas");
+        });
+    }
+```
+
+并不是在这里绑
+
+实际上应该写
+
+```cpp
+    void DeferredPass::DrawQuadOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        for (int32_t i = 0; i < m_quad_model.meshes.size(); ++i)
+        {
+            m_quad_mat.GetShader()->BindUniformBufferToPipeline(command_buffer, "lightDatas");
+            m_quad_model.meshes[i]->BindDrawCmd(command_buffer);
+
+            ++draw_call[1];
+        }
+    }
+```
+
+于是解决了这个问题
+
+## uniform 为空的问题
+
+用延迟渲染试了
+
+结果是全灰
+
+查看发现 lightdata 是全 0
+
+难道是我绑定还是有问题吗
+
+好吧发现似乎是又写错了
+
+```cpp
+    void DeferredPass::UpdateUniformBuffer()
+    {
+        ...
+
+        m_dynamic_uniform_buffer->Reset();
+        m_dynamic_uniform_buffer->Populate(&m_LightDatas, sizeof(m_LightDatas));
+    }
+```
+
+这个 buffer 用错了
