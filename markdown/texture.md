@@ -124,3 +124,47 @@
 ```
 
 就好了
+
+## 一个纹理一个 descriptor
+
+之前记得 `vkUpdateDescriptorSets` 不可以在 command buffer 录制的时候更新
+
+但是我这样做没错
+
+```cpp
+    void DeferredPass::DrawQuadOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        const vk::raii::Device& logical_device = g_runtime_context.render_system->GetLogicalDevice();
+
+        m_quad_mat.GetShader()->BindImageToDescriptor(logical_device, "inputDepth", *m_depth_attachment);
+
+        m_quad_mat.GetShader()->BindUniformBufferToPipeline(command_buffer, "lightDatas");
+        for (int32_t i = 0; i < m_quad_model.meshes.size(); ++i)
+        {
+            m_quad_model.meshes[i]->BindDrawCmd(command_buffer);
+
+            ++draw_call[1];
+        }
+    }
+```
+
+但是似乎就是不行
+
+> A freshly allocated descriptor set is just a bit of GPU memory, you need to make it point to your buffers. For that you use vkUpdateDescriptorSets(), which takes an array of VkWriteDescriptorSet for each of the resources that a descriptor set points to. If you were using the Update After Bind flag, it is possible to use descriptor sets, and bind them in command buffers, and update it right before submitting the command buffer. This is mostly a niche use case, and not commonly used. You can only update a descriptor set before it’s bound for the first time, unless you use that flag, in which case you can only update it before you submit the command buffer into a queue. When a descriptor set is being used, it’s immutable, and trying to update it will cause errors. The validation layers catch that. To be able to update the descriptor sets again, you need to wait until the command has finished executing.
+> 新分配的描述符集只是一点 GPU 内存，您需要将其指向您的缓冲区。为此，您可以使用vkUpdateDescriptorSets() ，它为描述符集指向的每个资源采用VkWriteDescriptorSet数组。如果您使用“绑定后更新”标志，则可以使用描述符集，并将它们绑定在命令缓冲区中，并在提交命令缓冲区之前更新它。这主要是一个利基用例，并不常用。您只能在第一次绑定之前更新描述符集，除非您使用该标志，在这种情况下，您只能在将命令缓冲区提交到队列之前更新它。当使用描述符集时，它是不可变的，尝试更新它会导致错误。验证层抓住了这一点。为了能够再次更新描述符集，您需要等待命令执行完毕。
+
+## bindless
+
+看到一些 bindless 的介绍
+
+[https://docs.vulkan.org/samples/latest/samples/extensions/descriptor_indexing/README.html](https://docs.vulkan.org/samples/latest/samples/extensions/descriptor_indexing/README.html)
+
+[https://dev.to/gasim/implementing-bindless-design-in-vulkan-34no](https://dev.to/gasim/implementing-bindless-design-in-vulkan-34no)
+
+[https://www.reddit.com/r/vulkan/comments/17fpico/i_kinda_dont_think_i_understand_descriptor/](https://www.reddit.com/r/vulkan/comments/17fpico/i_kinda_dont_think_i_understand_descriptor/)
+
+还是 vulkan 官方文档讲的详细
+
+但是现在我似乎都用不到这些
