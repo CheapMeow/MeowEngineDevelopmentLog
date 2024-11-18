@@ -1922,3 +1922,58 @@ VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation E
 难道是我的前向渲染的 populate 没问题，而延迟渲染的有问题？
 
 好的……原来是我 reset 放错位置了
+
+## uniform buffer 的安排
+
+然后还发现我之前没有把 image 和 ubo 的 uniform buffer 的 set 分开
+
+然后看到 [https://zoo.dev/blog/vulkan-resource-binding-2023](https://zoo.dev/blog/vulkan-resource-binding-2023)
+
+还是看到了有人真的是按照频率来写的
+
+```glsl
+layout(set = 0, binding = 0) uniform Scene
+{
+  mat4 viewProjection;
+  vec3 cameraPosition;
+  //...
+} scene;
+
+layout(set = 1, binding = 0) uniform Material
+{
+  vec4 albedo;
+  float metalness;
+  float roughness;
+  float ao;
+  //...
+} material;
+layout(set = 1, binding = 1) uniform sampler2D textures[];
+
+layout(set = 2, binding = 0) uniform Draw
+{
+  mat4 model;
+  //...
+} draw;
+```
+
+果然是 V P 放在最前，M 放最后，很好啊……
+
+或许理想的应该是
+
+V P
+
+shader paras
+
+material paras
+
+obj paras, such as M
+
+## API 设计
+
+既然 shader 定死了是这个写法的话
+
+那么应用程序绑定 descriptor set 也应该是这个设计
+
+这或许会涉及到一些 hard code
+
+但是这是必然的
