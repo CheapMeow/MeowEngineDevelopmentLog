@@ -168,3 +168,45 @@
 还是 vulkan 官方文档讲的详细
 
 但是现在我似乎都用不到这些
+
+## 绑定纹理的抽象接口
+
+绑定纹理的抽象接口还是挺复杂的
+
+主要是，这又对 shader 的布局提出了新的要求
+
+首先就是管道布局之间的兼容性
+
+[https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#descriptorsets-compatibility](https://docs.vulkan.org/spec/latest/chapters/descriptorsets.html#descriptorsets-compatibility)
+
+绑定 descriptor set 的时候要指定 pipeline layout
+
+不同的 pipeline layout 之间会有兼容性的问题
+
+总结来说似乎是
+
+>When binding a descriptor set to set number N, if the previously bound descriptor sets for sets zero through N-1 were all bound using compatible pipeline layouts, then performing this binding does not disturb any of the lower numbered sets. If, additionally, the previous bound descriptor set for set N was bound using a pipeline layout compatible for set N, then the bindings in sets numbered greater than N are also not disturbed.
+>当将描述符集绑定到集编号 N 时，如果先前绑定的集 0 到 N-1 的描述符集全部使用兼容的管道布局进行绑定，则执行此绑定不会干扰任何较低编号的集。此外，如果集合 N 的先前绑定描述符集合是使用与集合 N 兼容的流水线布局来绑定的，则编号大于 N 的集合中的绑定也不会受到干扰。
+>
+>Similarly, when binding a pipeline, the pipeline can correctly access any previously bound descriptor sets which were bound with compatible pipeline layouts, as long as all lower numbered sets were also bound with compatible layouts.
+>类似地，当绑定管道时，管道可以正确访问任何先前绑定的与兼容管道布局绑定的描述符集，只要所有较低编号的集也与兼容布局绑定即可。
+
+他说的绑定描述符集应该是 `vkCmdBindDescriptorSets` 绑定管道应该是 `vkCmdBindPipeline`
+
+所以还是要按照频率来分
+
+> Place the least frequently changing descriptor sets near the start of the pipeline layout, and place the descriptor sets representing the most frequently changing resources near the end. When pipelines are switched, only the descriptor set bindings that have been invalidated will need to be updated and the remainder of the descriptor set bindings will remain in place.
+
+但是这种纹理之类的……
+
+可能这个材质需要这堆纹理
+
+第二个材质需要另外一堆纹理的
+
+感觉很乱
+
+然后这些纹理放在哪个 set，也会很乱
+
+不过现在想想确实没必要担心这些
+
+反正你要是想要执行按照频率的绑定的话，shader 里面肯定是严格规定 set 的序号的
