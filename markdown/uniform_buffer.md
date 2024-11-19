@@ -2728,3 +2728,33 @@ VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation E
 那么如果之后出现更多 set 的话，要相容到这个体系又要花时间
 
 所以现在觉得 shader 确实，如果要按照频率绑定，只能显式写了
+
+## 放弃利用 shader 反射来管理 descriptor set 的方式
+
+于是根据上述结论，似乎 shader 就是不能管理 descriptor set 的
+
+descriptor set 应该跟着资源来走？
+
+但是这会很怪
+
+因为 descriptor set 是多个资源的集合
+
+单个资源拥有他实在是太乖了
+
+比如一个 set 里面有 diffuse normal specular
+
+然后我对这三个贴图各自都创建一个 descriptor set
+
+那肯定浪费
+
+而且这些纹理可能还会用在别的材质
+
+那就是一个灾难
+
+于是搜了 [https://www.reddit.com/r/vulkan/comments/86tna1/question_about_descriptor_sets/](https://www.reddit.com/r/vulkan/comments/86tna1/question_about_descriptor_sets/)
+
+别人的意思似乎是，要么一个纹理一个 descriptor set 要么就在 glsl 中用纹理数组，然后 push constant 加载索引
+
+我又想到了别人的做法，就是，资源和 material 是绑定的
+
+我感觉这似乎确实是正确的思路
