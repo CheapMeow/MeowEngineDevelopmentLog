@@ -2619,3 +2619,9 @@ VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation E
 实际上这个问题确实可以解决，就用那个 `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`
 
 但是这样为了我的一个想法而开启拓展，是否会麻烦……
+
+想想还是算了，自己相当于限制死了 0 1 2 3 分别是 per scene、per shader、per material、per obj
+
+那么如果之后出现更多 set 的话，要相容到这个体系又要花时间
+
+所以现在觉得 shader 确实，如果要按照频率绑定，只能显式写了
