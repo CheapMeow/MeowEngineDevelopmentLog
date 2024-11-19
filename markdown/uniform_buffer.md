@@ -1977,3 +1977,645 @@ obj paras, such as M
 这或许会涉及到一些 hard code
 
 但是这是必然的
+
+## per material 的绑定
+
+以前 per material 的我都是绑在 draw 前面
+
+现在改了根据 set 分类
+
+严格来说我的延迟渲染的两个 pass 的 pipeline layout 应该是兼容的
+
+所以我在第一个 pass 的时候就绑定 per material 的 descriptor，之后迭代循环的时候不再绑定
+
+也就是试试放在开头
+
+```cpp
+    void DeferredPass::RefreshFrameBuffers(const vk::raii::PhysicalDevice&   physical_device,
+                                           const vk::raii::Device&           logical_device,
+                                           const vk::raii::CommandPool&      command_pool,
+                                           const vk::raii::Queue&            queue,
+                                           const std::vector<vk::ImageView>& output_image_views,
+                                           const vk::Extent2D&               extent)
+    {
+        ...
+
+        // Update descriptor set
+
+        m_quad_mat.GetShader()->BindImageToDescriptor(logical_device, "inputColor", *m_color_attachment);
+        m_quad_mat.GetShader()->BindImageToDescriptor(logical_device, "inputNormal", *m_normal_attachment);
+        m_quad_mat.GetShader()->BindImageToDescriptor(logical_device, "inputPosition", *m_position_attachment);
+        m_quad_mat.GetShader()->BindImageToDescriptor(logical_device, "inputDepth", *m_depth_attachment);
+
+        OneTimeSubmit(logical_device, command_pool, queue, [&](const vk::raii::CommandBuffer& command_buffer) {
+            m_quad_mat.GetShader()->BindPerMaterialDescriptorSetToPipeline(command_buffer);
+        });
+    }
+```
+
+然后是错误
+
+```
+UID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0x95a125000000001a, type: 15, name: NULL
+        [1] 0xcfcda0000000001e, type: 17, name: NULL
+[MeowEngine][2024-11-19 11:37:36] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 10781939664831905818
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 14973800257937211422
+
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 4] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 0] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 1] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 2] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+[MeowEngine][2024-11-19 11:37:36] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 4] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 11:37:36] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 0] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 11:37:36] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 1] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 11:37:36] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 2] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+异常: Exception 0x80000003 encountered at address 0x7ff76a41c863
+```
+
+好奇怪啊，我居然还会出现 pipeline layout 没出现的 descriptor
+
+噢，我知道了，就是一开始额外绑定了 descriptor 导致的
+
+看来还是不能浪
+
+于是写回
+
+```cpp
+    void DeferredPass::DrawQuadOnly(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        m_quad_mat.GetShader()->BindPerMaterialDescriptorSetToPipeline(command_buffer);
+        for (int32_t i = 0; i < m_quad_model.meshes.size(); ++i)
+        {
+            m_quad_model.meshes[i]->BindDrawCmd(command_buffer);
+
+            ++draw_call[1];
+        }
+    }
+```
+
+解决了这个之后还有问题
+
+```
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0x95a125000000001a, type: 15, name: NULL
+        [1] 0xcfcda0000000001e, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 4] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 0] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 1] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 2] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0xb991fa0000000024, type: 15, name: NULL
+        [1] 0xa2eb680000000026, type: 17, name: NULL
+[MeowEngine][2024-11-19 14:16:10] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 10781939664831905818
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 14973800257937211422
+
+[MeowEngine][2024-11-19 14:16:10] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 4] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 14:16:10] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 0] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 14:16:10] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 1] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 14:16:10] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0xb991fa0000000024, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] SPIR-V (VK_SHADER_STAGE_FRAGMENT_BIT) uses descriptor slot [Set 1 Binding 2] (type `VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 13371743646546657316
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 11739591202880618534
+
+异常: Exception 0x80000003 encountered at address 0x7ff6f2b6c863
+
+```
+
+看上去问题完全没有变啊
+
+于是再细看
+
+是
+
+```cpp
+        m_obj2attachment_mat.GetShader()->BindBufferToDescriptor(
+            logical_device, "objData", m_dynamic_uniform_buffer->buffer);
+```
+
+的问题
+
+然后 pipeline 创建还报错……？我的 pipeline 和 shader 不匹配？我都是用反射得到的啊
+
+单步调试
+
+在
+
+```cpp
+    void DeferredPass::CreateMaterial(const vk::raii::PhysicalDevice& physical_device,
+                                      const vk::raii::Device&         logical_device,
+                                      const vk::raii::CommandPool&    command_pool,
+                                      const vk::raii::Queue&          queue,
+                                      DescriptorAllocatorGrowable&    m_descriptor_allocator)
+    {
+        auto obj_shader_ptr = std::make_shared<Shader>(physical_device,
+                                                       logical_device,
+                                                       m_descriptor_allocator,
+                                                       "builtin/shaders/obj.vert.spv",
+                                                       "builtin/shaders/obj.frag.spv");
+
+        m_obj2attachment_mat                        = Material(physical_device, logical_device, obj_shader_ptr);
+        m_obj2attachment_mat.color_attachment_count = 3;
+        m_obj2attachment_mat.CreatePipeline(logical_device, render_pass, vk::FrontFace::eClockwise, true);
+
+```
+
+的
+
+```cpp
+m_obj2attachment_mat.CreatePipeline(logical_device, render_pass, vk::FrontFace::eClockwise, true);
+```
+
+出现问题
+
+```
+VUID-VkGraphicsPipelineCreateInfo-layout-07988(ERROR / SPEC): msgNum: 559874765 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)
+    Objects: 2
+        [0] 0x95a125000000001a, type: 15, name: NULL
+        [1] 0xcfcda0000000001e, type: 17, name: NULL
+[MeowEngine][2024-11-19 14:22:33] Error: { Validation }:
+	messageIDName   = <VUID-VkGraphicsPipelineCreateInfo-layout-07988>
+	messageIdNumber = 559874765
+	message         = <Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-layout-07988 ] Object 0: handle = 0x95a125000000001a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0xcfcda0000000001e, type = VK_OBJECT_TYPE_PIPELINE_LAYOUT; | MessageID = 0x215f02cd | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[0] SPIR-V (VK_SHADER_STAGE_VERTEX_BIT) uses descriptor slot [Set 4 Binding 0] (type `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER or VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC or VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`) but was not declared in the pipeline layout. The Vulkan spec states: If a resource variables is declared in a shader, a descriptor slot in layout must match the shader stage (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-layout-07988)>
+	Objects:
+		Object 0
+			objectType   = ShaderModule
+			objectHandle = 10781939664831905818
+		Object 1
+			objectType   = PipelineLayout
+			objectHandle = 14973800257937211422
+```
+
+那么还是 shader 创建 pipeline layout 的问题
+
+```cpp
+    void Shader::GenerateLayout(const vk::raii::Device& raii_logical_device)
+    {
+        std::vector<DescriptorSetLayoutMeta>& metas = set_layout_metas.metas;
+
+        // first sort according to set
+        std::sort(
+            metas.begin(), metas.end(), [](const DescriptorSetLayoutMeta& a, const DescriptorSetLayoutMeta& b) -> bool {
+                return a.set < b.set;
+            });
+
+        // first sort according to binding
+        for (int32_t i = 0; i < metas.size(); ++i)
+        {
+            std::vector<vk::DescriptorSetLayoutBinding>& bindings = metas[i].bindings;
+            std::sort(bindings.begin(),
+                      bindings.end(),
+                      [](const vk::DescriptorSetLayoutBinding& a, const vk::DescriptorSetLayoutBinding& b) -> bool {
+                          return a.binding < b.binding;
+                      });
+        }
+
+        // support multiple descriptor set layout
+        for (int32_t i = 0; i < metas.size(); ++i)
+        {
+            DescriptorSetLayoutMeta& set_layout_meta = metas[i];
+
+            vk::DescriptorSetLayoutCreateInfo descriptor_set_layout_create_info(vk::DescriptorSetLayoutCreateFlags {},
+                                                                                set_layout_meta.bindings);
+
+            vk::DescriptorSetLayout setLayout;
+            raii_logical_device.getDispatcher()->vkCreateDescriptorSetLayout(
+                static_cast<VkDevice>(*raii_logical_device),
+                reinterpret_cast<const VkDescriptorSetLayoutCreateInfo*>(&descriptor_set_layout_create_info),
+                nullptr,
+                reinterpret_cast<VkDescriptorSetLayout*>(&setLayout));
+
+            descriptor_set_layouts.push_back(setLayout);
+        }
+
+        vk::PipelineLayoutCreateInfo pipeline_layout_create_info(
+            {}, static_cast<uint32_t>(descriptor_set_layouts.size()), descriptor_set_layouts.data());
+        pipeline_layout = vk::raii::PipelineLayout(raii_logical_device, pipeline_layout_create_info);
+    }
+```
+
+这里的创建不会报错，但是可能是缺东西了
+
+绑定 set 和 binding 关系的在
+
+```cpp
+        // support multiple descriptor set layout
+        for (int32_t i = 0; i < metas.size(); ++i)
+        {
+            DescriptorSetLayoutMeta& set_layout_meta = metas[i];
+
+            vk::DescriptorSetLayoutCreateInfo descriptor_set_layout_create_info(vk::DescriptorSetLayoutCreateFlags {},
+                                                                                set_layout_meta.bindings);
+
+            vk::DescriptorSetLayout setLayout;
+            raii_logical_device.getDispatcher()->vkCreateDescriptorSetLayout(
+                static_cast<VkDevice>(*raii_logical_device),
+                reinterpret_cast<const VkDescriptorSetLayoutCreateInfo*>(&descriptor_set_layout_create_info),
+                nullptr,
+                reinterpret_cast<VkDescriptorSetLayout*>(&setLayout));
+
+            descriptor_set_layouts.push_back(setLayout);
+        }
+```
+
+乍一看没问题啊，为什么会缺呢
+
+坏了……这里没有传入 set 的编号，只传入了 binding 的数组
+
+那么他是怎么知道 set 的，不会是根据我的写法默认从 0 安排吧……
+
+可能就是根据 `descriptor_set_layouts` 递增的
+
+或许可以看一下 `vk::PipelineLayoutCreateInfo`
+
+这个也没什么好看的，就是直接把传入的参数存起来
+
+传入的 pipeline layout 也是直接做的
+
+看上去我需要研究 vulkan spec 的 `vkCreatePipelineLayout`
+
+看到一个帖子是 [https://community.khronos.org/t/descriptor-declared-in-layout-but-not-being-recognised/110935](https://community.khronos.org/t/descriptor-declared-in-layout-but-not-being-recognised/110935)
+
+说问题在于他没有 update descriptor set
+
+很奇怪
+
+但是在我这里，我明确是创建 pipeline 时的错误
+
+我还是觉得就是 `vk::PipelineLayoutCreateInfo` 没有传入 set 编号，所以是默认递增的
+
+于是生成 empty descriptor 的 layout
+
+```cpp
+    void Shader::GenerateLayout(const vk::raii::Device& raii_logical_device)
+    {
+        std::vector<DescriptorSetLayoutMeta>& metas = set_layout_metas.metas;
+
+        // first sort according to set
+        std::sort(
+            metas.begin(), metas.end(), [](const DescriptorSetLayoutMeta& a, const DescriptorSetLayoutMeta& b) -> bool {
+                return a.set < b.set;
+            });
+
+        // first sort according to binding
+        for (int32_t i = 0; i < metas.size(); ++i)
+        {
+            std::vector<vk::DescriptorSetLayoutBinding>& bindings = metas[i].bindings;
+            std::sort(bindings.begin(),
+                      bindings.end(),
+                      [](const vk::DescriptorSetLayoutBinding& a, const vk::DescriptorSetLayoutBinding& b) -> bool {
+                          return a.binding < b.binding;
+                      });
+        }
+
+        if (metas.size() == 0)
+        {
+            vk::PipelineLayoutCreateInfo pipeline_layout_create_info({}, 0, nullptr);
+            pipeline_layout = vk::raii::PipelineLayout(raii_logical_device, pipeline_layout_create_info);
+        }
+        else
+        {
+            uint32_t max_set_number = metas[0].set;
+            for (int32_t i = 0; i < metas.size(); ++i)
+                max_set_number = max_set_number < metas[i].set ? metas[i].set : max_set_number;
+
+            for (int32_t i = 0, j = 0; i <= max_set_number; ++i)
+            {
+                if (j >= metas.size())
+                {
+                    MEOW_ERROR("DescriptorSetLayoutMeta index out of range.");
+                    break;
+                }
+
+                DescriptorSetLayoutMeta& set_layout_meta = metas[j];
+
+                // There may be empty descriptor set
+                vk::DescriptorSetLayoutCreateInfo descriptor_set_layout_create_info;
+                if (set_layout_meta.set == i)
+                {
+                    descriptor_set_layout_create_info = vk::DescriptorSetLayoutCreateInfo(
+                        vk::DescriptorSetLayoutCreateFlags {}, set_layout_meta.bindings);
+                    j++;
+                }
+                else
+                {
+                    descriptor_set_layout_create_info =
+                        vk::DescriptorSetLayoutCreateInfo(vk::DescriptorSetLayoutCreateFlags {}, nullptr);
+                }
+
+                vk::DescriptorSetLayout setLayout;
+                raii_logical_device.getDispatcher()->vkCreateDescriptorSetLayout(
+                    static_cast<VkDevice>(*raii_logical_device),
+                    reinterpret_cast<const VkDescriptorSetLayoutCreateInfo*>(&descriptor_set_layout_create_info),
+                    nullptr,
+                    reinterpret_cast<VkDescriptorSetLayout*>(&setLayout));
+
+                descriptor_set_layouts.push_back(setLayout);
+            }
+
+            vk::PipelineLayoutCreateInfo pipeline_layout_create_info(
+                {}, static_cast<uint32_t>(descriptor_set_layouts.size()), descriptor_set_layouts.data());
+            pipeline_layout = vk::raii::PipelineLayout(raii_logical_device, pipeline_layout_create_info);
+        }
+    }
+```
+
+然后把一些索引上的问题解决
+
+剩下的就是 empty descriptor set 没有 bound 的问题
+
+```
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b2ca77850, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b2ca77850, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2728053405776
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b284acc90, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b284acc90, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+VUID-vkCmdDrawIndexed-None-08600(ERROR / SPEC): msgNum: 941228658 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)
+    Objects: 2
+        [0] 0x27b284acc90, type: 6, name: NULL
+        [1] 0xa2eb680000000026, type: 19, name: NULL
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2727980223632
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2727980223632
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+[MeowEngine][2024-11-19 18:04:23] Error: { Validation }:
+	messageIDName   = <VUID-vkCmdDrawIndexed-None-08600>
+	messageIdNumber = 941228658
+	message         = <Validation Error: [ VUID-vkCmdDrawIndexed-None-08600 ] Object 0: handle = 0x27b284acc90, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa2eb680000000026, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x381a0272 | vkCmdDrawIndexed():  VkPipeline 0xa2eb680000000026[] uses set #0 but that set is not bound. The Vulkan spec states: For each set n that is statically used by a bound shader, a descriptor set must have been bound to n at the same pipeline bind point, with a VkPipelineLayout that is compatible for set n, with the VkPipelineLayout used to create the current VkPipeline or the VkDescriptorSetLayout array used to create the current VkShaderEXT , as described in Pipeline Layout Compatibility (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08600)>
+	Objects:
+		Object 0
+			objectType   = CommandBuffer
+			objectHandle = 2727980223632
+		Object 1
+			objectType   = Pipeline
+			objectHandle = 11739591202880618534
+
+异常: Exception 0xe06d7363 encountered at address 0x7ffb9a59fe4c
+
+```
+
+实际上这个问题确实可以解决，就用那个 `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`
+
+但是这样为了我的一个想法而开启拓展，是否会麻烦……
