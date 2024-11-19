@@ -2758,3 +2758,9 @@ descriptor set 应该跟着资源来走？
 我又想到了别人的做法，就是，资源和 material 是绑定的
 
 我感觉这似乎确实是正确的思路
+
+当然其实别人也有做这种写死 set 编号的东西，比如 hypehype
+
+![alt text](../assets/hypehype_2023_modern_moblie_rendering_simple_draw_loop.png)
+
+但是我确实是累了
