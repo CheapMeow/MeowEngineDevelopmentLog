@@ -1970,13 +1970,116 @@ obj paras, such as M
 
 ## API 设计
 
-既然 shader 定死了是这个写法的话
+现在的 API 都是这样的
 
-那么应用程序绑定 descriptor set 也应该是这个设计
+```cpp
+    void Shader::BindUniformBufferToPipeline(const vk::raii::CommandBuffer& command_buffer, const std::string& name)
+    {
+        BufferMeta* meta = nullptr;
+        for (auto it = buffer_meta_map.begin(); it != buffer_meta_map.end(); ++it)
+        {
+            if (it->first == name)
+            {
+                if (it->second.descriptorType == vk::DescriptorType::eUniformBuffer)
+                {
+                    meta = &it->second;
+                    break;
+                }
+            }
+        }
 
-这或许会涉及到一些 hard code
+        if (meta == nullptr)
+        {
+            MEOW_ERROR("Updating buffer failed, {} not found!", name);
+            return;
+        }
 
-但是这是必然的
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, meta->set, *descriptor_sets[meta->set], {});
+    }
+
+    void Shader::BindDynamicUniformBufferToPipeline(const vk::raii::CommandBuffer& command_buffer,
+                                                    const std::string&             name,
+                                                    const std::vector<uint32_t>&   dynamic_offsets)
+    {
+        BufferMeta* meta = nullptr;
+        for (auto it = buffer_meta_map.begin(); it != buffer_meta_map.end(); ++it)
+        {
+            if (it->first == name)
+            {
+                if (it->second.descriptorType == vk::DescriptorType::eUniformBufferDynamic)
+                {
+                    meta = &it->second;
+                    break;
+                }
+            }
+        }
+
+        if (meta == nullptr)
+        {
+            MEOW_ERROR("Updating buffer failed, {} not found!", name);
+            return;
+        }
+
+        command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                          *pipeline_layout,
+                                          meta->set,
+                                          *descriptor_sets[meta->set],
+                                          dynamic_offsets);
+    }
+```
+
+这个用于 uniform buffer 的话还将就，但是如果是
+
+如果要多一个 bind image 的话，API 就像是对于一个 name 就绑定一整个 descriptor set
+
+但是如果多个 texture 都是同一个 set 的不同 binding，那么就会很怪，会出现重复绑定 descriptor set 的情况
+
+如果不想这样的话
+
+要么回退到手工版本。就对于每一个材质，都 hard code 绑定 descriptor set 的过程
+
+但是这样完全不适合游戏引擎需要材质快速迭代更改的场景
+
+或许会有一些什么方法……
+
+看上去还是会想到 bindless 那些东西，但是我完全不想要那些
+
+或者可以做一个
+
+```cpp
+    void Shader::BindPerSceneDescriptorSetToPipeline(const vk::raii::CommandBuffer& command_buffer)
+    {
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0, *descriptor_sets[0], {});
+    }
+
+    void Shader::BindPerShaderDescriptorSetToPipeline(const vk::raii::CommandBuffer& command_buffer)
+    {
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, 1, *descriptor_sets[1], {});
+    }
+
+    void Shader::BindPerMaterialDescriptorSetToPipeline(const vk::raii::CommandBuffer& command_buffer)
+    {
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, 2, *descriptor_sets[2], {});
+    }
+
+    void Shader::BindPerObjectDescriptorSetToPipeline(const vk::raii::CommandBuffer& command_buffer)
+    {
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, 3, *descriptor_sets[3], {});
+    }
+```
+
+这何尝不是一种 hard code
+
+如果要这么写的话，那么各个 shader 就要跟着改了
+
+为了做个材质的似乎有点多余
+
+但是毕竟是玩具……就试试吧
 
 ## per material 的绑定
 
