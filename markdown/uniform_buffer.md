@@ -2764,3 +2764,15 @@ descriptor set 应该跟着资源来走？
 ![alt text](../assets/hypehype_2023_modern_moblie_rendering_simple_draw_loop.png)
 
 但是我确实是累了
+
+## 绑定 set 0 的时刻
+
+虽然理论上是 render pass 创建的时候最好
+
+但是实际上 render pass 之间还会切换
+
+那么还是 draw 开始的时候绑定吧
+
+本来是为了多个 render pass 之间切换的
+
+但是现在先不像那些组合怎么实现
