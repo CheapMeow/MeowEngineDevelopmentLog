@@ -387,3 +387,41 @@ resource 槽位是一个基类指针，但是根据反射可以取到子类信�
 现在我们没有这个编辑器的工具链支持
 
 那么就直接 hard code 吧
+
+但是
+
+```cpp
+// temporary loading textures
+
+std::shared_ptr<Level> level_ptr           = g_runtime_context.level_system->GetCurrentActiveLevel().lock();
+const auto&            all_gameobjects_map = level_ptr->GetAllVisibles();
+for (const auto& kv : all_gameobjects_map)
+{
+    std::shared_ptr<GameObject> model_go_ptr = kv.second.lock();
+    if (!model_go_ptr)
+        continue;
+
+    std::shared_ptr<ModelComponent> model_comp_ptr =
+        model_go_ptr->TryGetComponent<ModelComponent>("ModelComponent");
+    if (!model_comp_ptr)
+        continue;
+
+    auto model_res_ptr = model_comp_ptr->model_ptr.lock();
+    if (!model_res_ptr)
+        continue;
+
+    m_forward_mat.GetShader()->BindImageToDescriptorSet(
+        logical_device,
+        m_forward_descriptor_sets,
+        "diffuseMap",
+        *model_res_ptr->meshes[0]->texture_info.diffuse_texture);
+}
+```
+
+这样写还不太行
+
+因为在创建 material 的时候可能物体还没有加载
+
+## 材质的创建
+
+实际上
