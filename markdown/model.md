@@ -83,3 +83,10 @@
 ![alt text](../assets/error_vertex_sequence.png)
 
 但是实际上是应该按照 binding 的顺序来的，所以就出错了
+
+于是 shader 中的变量还是需要用 vector 而不是 bitmask
+
+```cpp
+BitMask<VertexAttributeBit> per_vertex_attributes;
+BitMask<VertexAttributeBit> instance_attributes;
+```
