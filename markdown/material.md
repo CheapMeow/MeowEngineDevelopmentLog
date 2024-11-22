@@ -422,6 +422,20 @@ for (const auto& kv : all_gameobjects_map)
 
 因为在创建 material 的时候可能物体还没有加载
 
+## material variant
+
+看了 Unity 文档说，Material Variants 并非旨在解决优化和可扩展性问题。
+
+意识到了确实如此……？
+
+你在做的时候当然可以不去解决
+
+但是想做也应该可以吧
+
+比如共有的逐场景的 set 只绑定一次之类的
+
+但是不确定，都要实际测了才知道
+
 ## 材质的创建
 
 实际上
