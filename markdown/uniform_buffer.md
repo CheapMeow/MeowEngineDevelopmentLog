@@ -3085,7 +3085,7 @@ void main()
 
 看看我之前做的正常的 dynamic uniform buffer 的 range 是不是会变的
 
-![alt text](image.png)
+![alt text](../assets/error_of_dynamic_uniform_buffer_range.png)
 
 我现在这个出错的就是 range 没变
 
