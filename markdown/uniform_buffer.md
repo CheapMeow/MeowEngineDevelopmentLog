@@ -2776,3 +2776,389 @@ descriptor set 应该跟着资源来走？
 本来是为了多个 render pass 之间切换的
 
 但是现在先不像那些组合怎么实现
+
+## 单独绑定一个 buffer 的问题
+
+突然发现，现在的材质对偏移量的记录存在一个问题，就是，所有的 dynamic buffer 需要公用绑定一个 vulkan buffer
+
+## 相同的值的 debug
+
+在遍历的时候输出是不同的位置
+
+```cpp
+        for (const auto& kv : all_gameobjects_map)
+        {
+            std::shared_ptr<GameObject>           gameobject_ptr = kv.second.lock();
+            std::shared_ptr<Transform3DComponent> transfrom_comp_ptr2 =
+                gameobject_ptr->TryGetComponent<Transform3DComponent>("Transform3DComponent");
+            std::shared_ptr<ModelComponent> model_ptr =
+                gameobject_ptr->TryGetComponent<ModelComponent>("ModelComponent");
+
+            if (!transfrom_comp_ptr2 || !model_ptr)
+                continue;
+
+#ifdef MEOW_DEBUG
+            if (!gameobject_ptr)
+                MEOW_ERROR("shared ptr is invalid!");
+            if (!transfrom_comp_ptr2)
+                MEOW_ERROR("shared ptr is invalid!");
+            if (!model_ptr)
+                MEOW_ERROR("shared ptr is invalid!");
+#endif
+
+            auto model    = transfrom_comp_ptr2->GetTransform();
+            auto position = transfrom_comp_ptr2->position;
+
+            MEOW_INFO("Position = ({}, {}, {})",
+                      transfrom_comp_ptr2->position.x,
+                      transfrom_comp_ptr2->position.y,
+                      transfrom_comp_ptr2->position.z);
+            MEOW_INFO("model[3] = ({}, {}, {}, {})", model[3][0], model[3][1], model[3][2], model[3][3]);
+```
+
+但是 render doc 里面看到的就是 uniform 全部都是相同的值
+
+于是先把一个 Dynamic 删了
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in vec2 inUV0;
+
+layout (set = 1, binding = 0) uniform LightData 
+{
+	vec3 pos[4];
+	vec3 color[4];
+    vec3 camPos;
+} lights;
+
+layout (set = 3, binding = 0) uniform PBRParamDynamic
+{
+    vec3 albedo;
+    float metallic;
+    float roughness;
+    float ao;
+} pbrParam;
+
+layout (location = 0) out vec4 outFragColor;
+
+const float PI = 3.14159265359;
+// ----------------------------------------------------------------------------
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness*roughness;
+    float a2 = a*a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+
+    float nom   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / denom;
+}
+// ----------------------------------------------------------------------------
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+
+    float nom   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / denom;
+}
+// ----------------------------------------------------------------------------
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+// ----------------------------------------------------------------------------
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+// ----------------------------------------------------------------------------
+void main()
+{		
+    vec3 N = inNormal;
+    vec3 V = normalize(lights.camPos - inPosition);
+
+    // calculate reflectance at normal incidence; if dia-electric (like plastic) use F0 
+    // of 0.04 and if it's a metal, use the albedo color as F0 (metallic workflow)    
+    vec3 F0 = vec3(0.04); 
+    F0 = mix(F0, pbrParam.albedo, pbrParam.metallic);
+
+    // reflectance equation
+    vec3 Lo = vec3(0.0);
+    for(int i = 0; i < 4; ++i) 
+    {
+        // calculate per-light radiance
+        vec3 L = normalize(lights.pos[i] - inPosition);
+        vec3 H = normalize(V + L);
+        float distance = length(lights.pos[i] - inPosition);
+        float attenuation = 1.0 / (distance * distance);
+        vec3 radiance = lights.color[i] * attenuation;
+
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(N, H, pbrParam.roughness);   
+        float G   = GeometrySmith(N, V, L, pbrParam.roughness);      
+        vec3 F    = fresnelSchlick(clamp(dot(H, V), 0.0, 1.0), F0);
+           
+        vec3 numerator    = NDF * G * F; 
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001; // + 0.0001 to prevent divide by zero
+        vec3 specular = numerator / denominator;
+        
+        // kS is equal to Fresnel
+        vec3 kS = F;
+        // for energy conservation, the diffuse and specular light can't
+        // be above 1.0 (unless the surface emits light); to preserve this
+        // relationship the diffuse component (kD) should equal 1.0 - kS.
+        vec3 kD = vec3(1.0) - kS;
+        // multiply kD by the inverse metalness such that only non-metals 
+        // have diffuse lighting, or a linear blend if partly metal (pure metals
+        // have no diffuse light).
+        kD *= 1.0 - pbrParam.metallic;	  
+
+        // scale light by NdotL
+        float NdotL = max(dot(N, L), 0.0);        
+
+        // add to outgoing radiance Lo
+        Lo += (kD * pbrParam.albedo / PI + specular) * radiance * NdotL;  // note that we already multiplied the BRDF by the Fresnel (kS) so we won't multiply by kS again
+    }   
+    
+    // ambient lighting (note that the next IBL tutorial will replace 
+    // this ambient lighting with environment lighting).
+    vec3 ambient = vec3(0.03) * pbrParam.albedo * pbrParam.ao;
+
+    vec3 color = ambient + Lo;
+
+    // HDR tonemapping
+    color = color / (color + vec3(1.0));
+    // gamma correct
+    color = pow(color, vec3(1.0/2.2)); 
+
+    outFragColor = vec4(color, 1.0);
+}
+
+```
+
+变成
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in vec2 inUV0;
+
+layout (set = 1, binding = 0) uniform LightData 
+{
+	vec3 pos[4];
+	vec3 color[4];
+    vec3 camPos;
+} lights;
+
+layout (location = 0) out vec4 outFragColor;
+
+const float PI = 3.14159265359;
+// ----------------------------------------------------------------------------
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness*roughness;
+    float a2 = a*a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+
+    float nom   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / denom;
+}
+// ----------------------------------------------------------------------------
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+
+    float nom   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / denom;
+}
+// ----------------------------------------------------------------------------
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+// ----------------------------------------------------------------------------
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+// ----------------------------------------------------------------------------
+void main()
+{	
+    vec3 albedo = vec3(0.5, 0.0, 0.0);
+    float metallic = 0.5;
+    float roughness = 0.5;
+    float ao = 1.0;
+
+    vec3 N = inNormal;
+    vec3 V = normalize(lights.camPos - inPosition);
+
+    // calculate reflectance at normal incidence; if dia-electric (like plastic) use F0 
+    // of 0.04 and if it's a metal, use the albedo color as F0 (metallic workflow)    
+    vec3 F0 = vec3(0.04); 
+    F0 = mix(F0, albedo, metallic);
+
+    // reflectance equation
+    vec3 Lo = vec3(0.0);
+    for(int i = 0; i < 4; ++i) 
+    {
+        // calculate per-light radiance
+        vec3 L = normalize(lights.pos[i] - inPosition);
+        vec3 H = normalize(V + L);
+        float distance = length(lights.pos[i] - inPosition);
+        float attenuation = 1.0 / (distance * distance);
+        vec3 radiance = lights.color[i] * attenuation;
+
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(N, H, roughness);   
+        float G   = GeometrySmith(N, V, L, roughness);      
+        vec3 F    = fresnelSchlick(clamp(dot(H, V), 0.0, 1.0), F0);
+           
+        vec3 numerator    = NDF * G * F; 
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001; // + 0.0001 to prevent divide by zero
+        vec3 specular = numerator / denominator;
+        
+        // kS is equal to Fresnel
+        vec3 kS = F;
+        // for energy conservation, the diffuse and specular light can't
+        // be above 1.0 (unless the surface emits light); to preserve this
+        // relationship the diffuse component (kD) should equal 1.0 - kS.
+        vec3 kD = vec3(1.0) - kS;
+        // multiply kD by the inverse metalness such that only non-metals 
+        // have diffuse lighting, or a linear blend if partly metal (pure metals
+        // have no diffuse light).
+        kD *= 1.0 - metallic;	  
+
+        // scale light by NdotL
+        float NdotL = max(dot(N, L), 0.0);        
+
+        // add to outgoing radiance Lo
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;  // note that we already multiplied the BRDF by the Fresnel (kS) so we won't multiply by kS again
+    }   
+    
+    // ambient lighting (note that the next IBL tutorial will replace 
+    // this ambient lighting with environment lighting).
+    vec3 ambient = vec3(0.03) * albedo * ao;
+
+    vec3 color = ambient + Lo;
+
+    // HDR tonemapping
+    color = color / (color + vec3(1.0));
+    // gamma correct
+    color = pow(color, vec3(1.0/2.2)); 
+
+    outFragColor = vec4(color, 1.0);
+}
+
+```
+
+即使如此，绑定仍然是没有变化
+
+于是 checkout 了 9b97e0c2da68f5d9f508fbcf9ba783c655d1d693
+
+看看我之前做的正常的 dynamic uniform buffer 的 range 是不是会变的
+
+![alt text](image.png)
+
+我现在这个出错的就是 range 没变
+
+于是旧代码的 range 确实是会变的
+
+那就说明是我的 range 的问题
+
+旧代码的绑定是
+
+```cpp
+    void Shader::BindDynamicUniformBufferToPipeline(const vk::raii::CommandBuffer& command_buffer,
+                                                    const std::string&             name,
+                                                    const std::vector<uint32_t>&   dynamic_offsets)
+    {
+        BufferMeta* meta = nullptr;
+        for (auto it = buffer_meta_map.begin(); it != buffer_meta_map.end(); ++it)
+        {
+            if (it->first == name)
+            {
+                if (it->second.descriptorType == vk::DescriptorType::eUniformBufferDynamic)
+                {
+                    meta = &it->second;
+                    break;
+                }
+            }
+        }
+
+        if (meta == nullptr)
+        {
+            MEOW_ERROR("Updating buffer failed, {} not found!", name);
+            return;
+        }
+
+        command_buffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0, *descriptor_sets[meta->set], dynamic_offsets);
+    }
+```
+
+我现在的绑定是
+
+好吧，我发现了
+
+```cpp
+for (uint32_t i = 0; i < model_res_ptr->meshes.size(); ++i)
+{
+    // command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+    //                                   *m_forward_mat.GetShader()->pipeline_layout,
+    //                                   2,
+    //                                   {*m_forward_descriptor_sets[2], *m_forward_descriptor_sets[3]},
+    //                                   m_forward_mat.GetDynamicOffsets(i));
+    command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                        *m_forward_mat.GetShader()->pipeline_layout,
+                                        2,
+                                        *m_forward_descriptor_sets[2],
+                                        m_forward_mat.GetDynamicOffsets(i));
+    model_res_ptr->meshes[i]->BindDrawCmd(command_buffer);
+
+    ++draw_call;
+}
+```
+
+这个 i 一直是 0 啊
+
+我服了，我以前是怎么写的
+
+应该是
+
+```cpp
+command_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                    *m_forward_mat.GetShader()->pipeline_layout,
+                                    2,
+                                    *m_forward_descriptor_sets[2],
+                                    m_forward_mat.GetDynamicOffsets(draw_call));
+```
+
+才对

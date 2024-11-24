@@ -231,3 +231,27 @@ Debug 一下，确实
 ```
 
 然后就好了
+
+## API 设计
+
+我是不希望资源类的内部去调用 global context 的
+
+所以资源类的构造函数会包含很多 vulkan 资源句柄
+
+但是这样就导致 resource system 的头文件中会用到 global context
+
+但是 global context 又是包含各个 system 的
+
+所以就有 include 循环了
+
+想想还是放弃了这种坚持
+
+什么能跑通就用什么
+
+于是还是把调用 global context 放在了资源类内部
+
+但是 model 本身的构造也是模板的
+
+于是也要在头文件中调用 global context 
+
+于是多写一个辅助函数，把调用的放在 cpp
