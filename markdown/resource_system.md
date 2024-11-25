@@ -255,3 +255,88 @@ Debug 一下，确实
 于是也要在头文件中调用 global context 
 
 于是多写一个辅助函数，把调用的放在 cpp
+
+## 希望设计统一的存储方法
+
+```cpp
+class ResourceSystem final : public System
+{
+public:
+    ResourceSystem()  = default;
+    ~ResourceSystem() = default;
+
+    void Start() override {}
+
+    void Tick(float dt) override {}
+
+    template<typename ResourceType, typename... Args>
+    UUID Register(Args&&... args)
+    {
+        auto res_ptr = std::make_shared<ResourceType>(std::forward<Args>(args)...);
+        UUID res_uuid(res_ptr->uuid);
+        m_resources[res_uuid] = res_ptr;
+        return res_uuid;
+    }
+
+    template<typename ResourceType>
+    std::shared_ptr<ResourceType> GetResource(UUID uuid)
+    {
+        auto it = m_resources.find(uuid);
+        if (it == m_resources.end())
+            return nullptr;
+
+        return std::dynamic_pointer_cast<ResourceType>(it->second);
+    }
+
+private:
+    std::unordered_map<UUID, std::shared_ptr<RenderResourceBase>> m_resources;
+};
+```
+
+但是让 resource system 本身来思考怎么构造并不好
+
+因为我在 image data 这里还会有
+
+```cpp
+static std::shared_ptr<ImageData> CreateDepthBuffer(vk::Format format, const vk::Extent2D& extent);
+
+static std::shared_ptr<ImageData>
+CreateTexture(const std::string&     file_path,
+                vk::Format             format               = vk::Format::eR8G8B8A8Unorm,
+                vk::ImageUsageFlags    usage_flags          = {},
+                vk::ImageAspectFlags   aspect_mask          = vk::ImageAspectFlagBits::eColor,
+                vk::FormatFeatureFlags format_feature_flags = {},
+                bool                   anisotropy_enable    = false,
+                bool                   force_staging        = false);
+
+static std::shared_ptr<ImageData>
+CreateAttachment(vk::Format             format               = vk::Format::eR8G8B8A8Unorm,
+                    const vk::Extent2D&    extent               = {256, 256},
+                    vk::ImageUsageFlags    usage_flags          = {},
+                    vk::ImageAspectFlags   aspect_mask          = vk::ImageAspectFlagBits::eColor,
+                    vk::FormatFeatureFlags format_feature_flags = {},
+                    bool                   anisotropy_enable    = false);
+
+static std::shared_ptr<ImageData>
+CreateRenderTarget(vk::Format             format               = vk::Format::eR8G8B8A8Unorm,
+                    const vk::Extent2D&    extent               = {256, 256},
+                    vk::ImageUsageFlags    usage_flags          = {},
+                    vk::ImageAspectFlags   aspect_mask          = vk::ImageAspectFlagBits::eColor,
+                    vk::FormatFeatureFlags format_feature_flags = {},
+                    bool                   anisotropy_enable    = false);
+
+static std::shared_ptr<ImageData>
+CreateCubemap(const std::vector<std::string>& file_paths,
+                vk::Format                      format               = vk::Format::eR8G8B8A8Unorm,
+                vk::ImageUsageFlags             usage_flags          = {},
+                vk::ImageAspectFlags            aspect_mask          = vk::ImageAspectFlagBits::eColor,
+                vk::FormatFeatureFlags          format_feature_flags = {},
+                bool                            anisotropy_enable    = false,
+                bool                            force_staging        = false);
+```
+
+这样的构造的辅助函数
+
+于是就不好和传参数包配合
+
+于是还是把构造这个工作交给外部实现吧
