@@ -306,3 +306,45 @@ DeferredPass::DeferredPass(vk::raii::PhysicalDevice const& physical_device,
 现在是可以用动态渲染实现 local read 了
 
 于是完全可以转向动态渲染
+
+## subpass 和 render pass 之间的区别
+
+看到 picoolo 的渲染是
+
+```cpp
+static_cast<DirectionalLightShadowPass*>(m_directional_light_pass.get())->draw();
+
+static_cast<PointLightShadowPass*>(m_point_light_shadow_pass.get())->draw();
+
+ColorGradingPass& color_grading_pass = *(static_cast<ColorGradingPass*>(m_color_grading_pass.get()));
+FXAAPass&         fxaa_pass          = *(static_cast<FXAAPass*>(m_fxaa_pass.get()));
+ToneMappingPass&  tone_mapping_pass  = *(static_cast<ToneMappingPass*>(m_tone_mapping_pass.get()));
+UIPass&           ui_pass            = *(static_cast<UIPass*>(m_ui_pass.get()));
+CombineUIPass&    combine_ui_pass    = *(static_cast<CombineUIPass*>(m_combine_ui_pass.get()));
+ParticlePass&     particle_pass      = *(static_cast<ParticlePass*>(m_particle_pass.get()));
+
+static_cast<ParticlePass*>(m_particle_pass.get())
+    ->setRenderCommandBufferHandle(
+        static_cast<MainCameraPass*>(m_main_camera_pass.get())->getRenderCommandBuffer());
+
+static_cast<MainCameraPass*>(m_main_camera_pass.get())
+    ->draw(color_grading_pass,
+            fxaa_pass,
+            tone_mapping_pass,
+            ui_pass,
+            combine_ui_pass,
+            particle_pass,
+            vulkan_rhi->m_current_swapchain_image_index);
+            
+g_runtime_global_context.m_debugdraw_manager->draw(vulkan_rhi->m_current_swapchain_image_index);
+```
+
+阴影的 pass 是独立的，其他的都是 subpass
+
+为什么呢
+
+哦，因为是用于创建阴影贴图而不是使用颜色附件
+
+所以阴影的 pass 利用不了颜色附件
+
+其他的就可以
