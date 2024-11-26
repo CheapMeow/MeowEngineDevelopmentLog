@@ -1,5 +1,13 @@
 # 纹理
 
+## 图像数据类 ImageData
+
+不同的图像所包含的渲染数据类型是一样的，都是 `vk::raii::Image` `vk::raii::ImageView` `vk::raii::Sampler` 那些
+
+但是不同的图像的创建配置，图像布局的转换会不一样
+
+所以使用工厂模式来创建图像
+
 ## 加载纹理
 
 看了 VulkanDemos 的
