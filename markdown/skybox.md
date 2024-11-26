@@ -150,3 +150,22 @@ VUID-vkCmdCopyBufferToImage-pRegions-00171(ERROR / SPEC): msgNum: 1867332608 - V
 于是发现是我的图像格式是 16B 的，之前是 4B 的所以乘 4，现在应该乘 16
 
 copy region 按照图像格式算出来的是对的，我自己的是错的
+
+## InvalidImageLayout
+
+```
+UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout(ERROR / SPEC): msgNum: 1303270965 - Validation Error: [ UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout ] Object 0: handle = 0x1d084cf4d10, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xa182620000000079, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0x4dae5635 | vkQueueSubmit(): pSubmits[0].pCommandBuffers[0] command buffer VkCommandBuffer 0x1d084cf4d10[] expects VkImage 0xa182620000000079[] (subresource: aspectMask 0x1 array layer 1, mip level 0) to be in layout VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_UNDEFINED.
+    Objects: 2
+        [0] 0x1d084cf4d10, type: 6, name: NULL
+        [1] 0xa182620000000079, type: 10, name: NULL
+```
+
+这就不合理了啊，我的 `SetLayout` 应该起效果才对
+
+于是试试简单纹理的，没错
+
+于是发现问题在于 `vk::ImageSubresourceRange`
+
+`SetLayout` 也需要 `vk::ImageSubresourceRange`，那里面需要指定 mip level 和 layer count
+
+所以 cubemap 的 6 个 layer 只被我转了 1 个，怪不得 5 个 error
