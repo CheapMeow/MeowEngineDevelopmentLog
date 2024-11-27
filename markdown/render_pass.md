@@ -348,3 +348,111 @@ g_runtime_global_context.m_debugdraw_manager->draw(vulkan_rhi->m_current_swapcha
 所以阴影的 pass 利用不了颜色附件
 
 其他的就可以
+
+## 别人怎么抽象 subpass
+
+于是发现他这个 subpass dependency 就是 hard code 在 `void MainCameraPass::setupRenderPass()` 里面的
+
+并不是我以为的，可以各自单独配置
+
+## dynamic rendering 的意义
+
+看了 [https://www.reddit.com/r/vulkan/comments/sd93nm/the_future_of_renderpass_mechanism_vs_dynamic/](https://www.reddit.com/r/vulkan/comments/sd93nm/the_future_of_renderpass_mechanism_vs_dynamic/)
+
+所说，大部分观点是，动态渲染使得图像布局转换变得清晰了
+
+然后还有说，pipeline 和 render pass 解耦
+
+也就是着色器和渲染状态（储存在 pipeline）和附件（储存在 render pass）解耦
+
+怎么说呢，创建 pipeline 的时候，你还是会需要知道附件信息
+
+只是这个附件信息现在是格式，而不是附件 image 指针
+
+来自 Vulkan-Samples
+
+samples\extensions\dynamic_rendering\dynamic_rendering.cpp
+
+```cpp
+// Provide information for dynamic rendering
+VkPipelineRenderingCreateInfoKHR pipeline_create{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
+pipeline_create.pNext                   = VK_NULL_HANDLE;
+pipeline_create.colorAttachmentCount    = 1;
+pipeline_create.pColorAttachmentFormats = &color_rendering_format;
+pipeline_create.depthAttachmentFormat   = depth_format;
+if (!vkb::is_depth_only_format(depth_format))
+{
+    pipeline_create.stencilAttachmentFormat = depth_format;
+}
+
+// Use the pNext to point to the rendering create struct
+VkGraphicsPipelineCreateInfo graphics_create{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+graphics_create.pNext               = &pipeline_create;
+graphics_create.renderPass          = VK_NULL_HANDLE;
+graphics_create.pInputAssemblyState = &input_assembly_state;
+graphics_create.pRasterizationState = &rasterization_state;
+graphics_create.pColorBlendState    = &color_blend_state;
+graphics_create.pMultisampleState   = &multisample_state;
+graphics_create.pViewportState      = &viewport_state;
+graphics_create.pDepthStencilState  = &depth_stencil_state;
+graphics_create.pDynamicState       = &dynamic_state;
+graphics_create.pVertexInputState   = &vertex_input_state;
+graphics_create.stageCount          = static_cast<uint32_t>(shader_stages.size());
+graphics_create.pStages             = shader_stages.data();
+graphics_create.layout              = pipeline_layout;
+
+// Skybox pipeline (background cube)
+VkSpecializationInfo                    specialization_info;
+std::array<VkSpecializationMapEntry, 1> specialization_map_entries{};
+specialization_map_entries[0]        = vkb::initializers::specialization_map_entry(0, 0, sizeof(uint32_t));
+uint32_t shadertype                  = 0;
+specialization_info                  = vkb::initializers::specialization_info(1, specialization_map_entries.data(), sizeof(shadertype), &shadertype);
+shader_stages[0].pSpecializationInfo = &specialization_info;
+shader_stages[1].pSpecializationInfo = &specialization_info;
+
+if (!enable_dynamic)
+{
+    graphics_create.pNext      = VK_NULL_HANDLE;
+    graphics_create.renderPass = render_pass;
+}
+
+vkCreateGraphicsPipelines(get_device().get_handle(), VK_NULL_HANDLE, 1, &graphics_create, VK_NULL_HANDLE, &skybox_pipeline);
+```
+
+我倒觉得这个解耦体现在不需要传入 render pass 了
+
+（因为你已经没有 render pass 对象了）
+
+也就是体现在
+
+```cpp
+graphics_create.renderPass          = VK_NULL_HANDLE;
+```
+
+和 render pass 解耦之后，你就可以用在颜色格式相同的任何 pass 了
+
+在 pass 之间共享的意义并不大，因为你不是完全自由的，因为你还是需要客户端知晓哪些是颜色格式相同的 pass
+
+还是有一层心智负担的
+
+但是能够脱离 render pass 来创建 pipeline 还是很爽的
+
+比如你的设计如果是不从你对 pass 的抽象类里面获取颜色附件的格式、深度附件的格式
+
+而是从别人地方获取，比如使用默认值，或者从自己创建的 meta 文件中获取
+
+那么创建 material 这种包含 pipeline 的抽象类的时候，就与 render pass 的抽象类完全无关了
+
+现在想想似乎还有第三点
+
+就是推出了 local read 之后，你不需要在创建 render pass 的时候就知道 subpass 的所有信息
+
+这使得 render pass 和 subpass 之间是可以解耦的，这其实我觉得是最大的意义
+
+综合这些的话：
+
+1. 由程序客户端控制图像布局转换
+
+2. 拥有 pipeline 的抽象类（如 material）与 render pass 抽象类之间解耦
+
+3. render pass 和 subpass 之间解耦

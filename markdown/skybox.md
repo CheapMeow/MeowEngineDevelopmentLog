@@ -169,3 +169,13 @@ UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout(ERROR / SPEC): msgNum: 13
 `SetLayout` 也需要 `vk::ImageSubresourceRange`，那里面需要指定 mip level 和 layer count
 
 所以 cubemap 的 6 个 layer 只被我转了 1 个，怪不得 5 个 error
+
+## 为啥你们都对 skybox 用 mipmap
+
+不知道为什么你们对 skybox 用 mipmap
+
+明明渲染天空盒的时候与天空盒之间的距离不变
+
+我搜了一下，别人也是这样想
+
+[https://gamedev.net/forums/topic/494832-skybox-mip-maps/4227380/](https://gamedev.net/forums/topic/494832-skybox-mip-maps/4227380/)
