@@ -557,3 +557,229 @@ void RenderSystem::CreateLogicalDevice()
 所以他对代码架构组织并没有帮助
 
 仅仅会影响对 vulkan 的调用风格而已
+
+## transit layout
+
+Vulkan Samples 是这样做布局转换
+
+```cpp
+vkb::image_layout_transition(draw_cmd_buffer,
+                                swapchain_buffers[i].image,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                0,
+                                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                range);
+
+vkb::image_layout_transition(draw_cmd_buffer,
+                                depth_stencil.image,
+                                VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                                depth_range);
+```
+
+主要是给布局转换的设了两个接口
+
+怎么说呢
+
+可能是因为他的内部
+
+```cpp
+void image_layout_transition(VkCommandBuffer                command_buffer,
+                             VkImage                        image,
+                             VkImageLayout                  old_layout,
+                             VkImageLayout                  new_layout,
+                             VkImageSubresourceRange const &subresource_range)
+{
+	VkPipelineStageFlags src_stage_mask  = getPipelineStageFlags(old_layout);
+	VkPipelineStageFlags dst_stage_mask  = getPipelineStageFlags(new_layout);
+	VkAccessFlags        src_access_mask = getAccessFlags(old_layout);
+	VkAccessFlags        dst_access_mask = getAccessFlags(new_layout);
+
+	image_layout_transition(command_buffer, image, src_stage_mask, dst_stage_mask, src_access_mask, dst_access_mask, old_layout, new_layout, subresource_range);
+}
+```
+
+因为是对 old layout 和 new layout 都是相同的处理函数
+
+所以处理能力有点弱
+
+所以才额外多一个直接设置各个 flag 的版本
+
+我的话……等到出问题再说吧
+
+## dynamic rendering 的用处
+
+突然想到，如果 undefined 可以表示任意 layout 的话
+
+那么其实 editor 和 game 的区别就仅仅在于末尾的 layout 变化了
+
+所以如果真的可以这样的话
+
+那么 editor 和 game 的合并就方便了
+
+再也不需要我分叉创建类了
+
+## 对照 piccolo 的 render pass
+
+看了一下 piccolo，他的 render pass 竟然是只有一个的，forward 和 deferred 通用的
+
+不对啊，但是位置贴图 法线贴图那些的，怎么处理的啊，forward 和 deferred 在这里肯定是不一样的吧
+
+然后看到他这个 layout 和 pipeline 居然都是写死了数组，然后用枚举去索引
+
+```cpp
+// 1: per mesh layout
+// 2: global layout
+// 3: mesh per material layout
+// 4: sky box layout
+// 5: axis layout
+// 6: billboard type particle layout
+// 7: gbuffer lighting
+enum LayoutType : uint8_t
+{
+    _per_mesh = 0,
+    _mesh_global,
+    _mesh_per_material,
+    _skybox,
+    _axis,
+    _particle,
+    _deferred_lighting,
+    _layout_type_count
+};
+
+// 1. model
+// 2. sky box
+// 3. axis
+// 4. billboard type particle
+enum RenderPipeLineType : uint8_t
+{
+    _render_pipeline_type_mesh_gbuffer = 0,
+    _render_pipeline_type_deferred_lighting,
+    _render_pipeline_type_mesh_lighting,
+    _render_pipeline_type_skybox,
+    _render_pipeline_type_axis,
+    _render_pipeline_type_particle,
+    _render_pipeline_type_count
+};
+```
+
+render pass 也是
+
+```cpp
+enum
+{
+    _main_camera_pass_gbuffer_a                     = 0,
+    _main_camera_pass_gbuffer_b                     = 1,
+    _main_camera_pass_gbuffer_c                     = 2,
+    _main_camera_pass_backup_buffer_odd             = 3,
+    _main_camera_pass_backup_buffer_even            = 4,
+    _main_camera_pass_post_process_buffer_odd       = 5,
+    _main_camera_pass_post_process_buffer_even      = 6,
+    _main_camera_pass_depth                         = 7,
+    _main_camera_pass_swap_chain_image              = 8,
+    _main_camera_pass_custom_attachment_count       = 5,
+    _main_camera_pass_post_process_attachment_count = 2,
+    _main_camera_pass_attachment_count              = 9,
+};
+
+enum
+{
+    _main_camera_subpass_basepass = 0,
+    _main_camera_subpass_deferred_lighting,
+    _main_camera_subpass_forward_lighting,
+    _main_camera_subpass_tone_mapping,
+    _main_camera_subpass_color_grading,
+    _main_camera_subpass_fxaa,
+    _main_camera_subpass_ui,
+    _main_camera_subpass_combine_ui,
+    _main_camera_subpass_count
+};
+```
+
+这都是 hard code 啊
+
+然后看懂了他是为什么可以一个 render pass 实现 forward 和 deferred 了
+
+deferred 的两个阶段在 forward pass 这里就是直接跳过了
+
+```cpp
+    void MainCameraPass::drawForward(ColorGradingPass& color_grading_pass,
+                                     FXAAPass&         fxaa_pass,
+                                     ToneMappingPass&  tone_mapping_pass,
+                                     UIPass&           ui_pass,
+                                     CombineUIPass&    combine_ui_pass,
+                                     ParticlePass&     particle_pass,
+                                     uint32_t          current_swapchain_image_index)
+    {
+        ...
+
+        m_rhi->cmdNextSubpassPFN(m_rhi->getCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+
+        m_rhi->cmdNextSubpassPFN(m_rhi->getCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+
+        float color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        m_rhi->pushEvent(m_rhi->getCurrentCommandBuffer(), "Forward Lighting", color);
+
+        drawMeshLighting();
+        drawSkybox();
+        particle_pass.draw();
+
+        ...
+```
+
+顶上两个 `cmdNextSubpassPFN` 就是跳过 deferred 的 subpass
+
+如图可见 `Forward Lighting` 顶上两个跳过
+
+![alt text](../assets/deferred_pass_skipping.png)
+
+然后如果是 deferred render，却还需要 forward lighting 的 subpass
+
+```cpp
+m_rhi->pushEvent(m_rhi->getCurrentCommandBuffer(), "Forward Lighting", color);
+
+particle_pass.draw();
+
+m_rhi->popEvent(m_rhi->getCurrentCommandBuffer());
+```
+
+forward render 中轮到这个 subpass 里面就是正经画 mesh
+
+```cpp
+m_rhi->pushEvent(m_rhi->getCurrentCommandBuffer(), "Forward Lighting", color);
+
+drawMeshLighting();
+drawSkybox();
+particle_pass.draw();
+
+m_rhi->popEvent(m_rhi->getCurrentCommandBuffer());
+```
+
+如此神奇
+
+render pass 是在 deferred 和 forward 之间共享的
+
+framebuffer 也是在 deferred 和 forward 之间共享的
+
+那么这就有额外的绑定了，maybe
+
+当然这里的 pass 绝大部分共享的话就还好
+
+但是 hard code 实在是太丑了
+
+果然还是需要 dynamic rendering
+
+不用 dynamic rendering 的话，要对不同的 render pass 抽象类的组合创建不同的 vulkan render pass
+
+或者如果你的组合数目有限，或者发生变动的 vulkan sub render pass 的数目很少的时候，你可以将所有的 vulkan sub render pass 都写成一个大的 render pass
+
+然后按需使用 `cmdNextSubpassPFN` 跳过不需要的 subpass
+
+一个是列出所有的排列组合，一个是将所有的排列组合统一为一个 vulkan render pass
+
+前者可能需要一些复杂的生成胶水代码，后者需要 hard code 一个臃肿的结构
+
+果然还是 dynamic rendering 更好
