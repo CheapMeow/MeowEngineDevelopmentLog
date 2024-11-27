@@ -456,3 +456,104 @@ graphics_create.renderPass          = VK_NULL_HANDLE;
 2. 拥有 pipeline 的抽象类（如 material）与 render pass 抽象类之间解耦
 
 3. render pass 和 subpass 之间解耦
+
+## 启动 dynamic rendering
+
+想通过这个来启动
+
+```cpp
+// prepare for create vk::InstanceCreateInfo
+std::vector<vk::ExtensionProperties> available_instance_extensions =
+    m_vulkan_context.enumerateInstanceExtensionProperties();
+std::vector<const char*> required_instance_extensions = GetRequiredInstanceExtensions({
+    VK_KHR_SURFACE_EXTENSION_NAME,
+    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+});
+if (!ValidateExtensions(required_instance_extensions, available_instance_extensions))
+{
+    throw std::runtime_error("Required instance extensions are missing.");
+}
+```
+
+但是看上去 1.3 里面已经不是 extension 了，我找不到
+
+于是发现是在 device extension 里面而不是 instance extension 里面
+
+```cpp
+std::vector<const char*> k_required_device_extensions = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+};
+
+void RenderSystem::CreateLogicalDevice()
+{
+    // Logical Device
+
+    std::vector<vk::ExtensionProperties> device_extensions = m_physical_device.enumerateDeviceExtensionProperties();
+    if (!ValidateExtensions(k_required_device_extensions, device_extensions))
+    {
+        throw std::runtime_error("Required device extensions are missing, will try without.");
+    }
+```
+
+这样检查就好了
+
+## 创建用于 dynamic rendering 的 pipeline
+
+现在 `vk::GraphicsPipelineCreateInfo` 不需要 `renderPass` 和 `subpass` 了
+
+但是需要一个额外的用于 dynamic rendering 的 info
+
+在创建 `vk::PipelineRenderingCreateInfoKHR` 的时候就发现了
+
+不管是 render pass 还是 dynamic rendering
+
+始终都是要知道附件信息传入的
+
+所以 dynamic rendering 并不能和抽象的 render pass 之间分来
+
+附件信息始终是需要输入的
+
+所以优势或许可以总结为
+
+1. 由客户端控制图像布局转换，不需要静态地定义出完整 render pass 的抽象的图像布局
+
+2. 客户端对 subpass 的抽象之间解耦
+
+客户端对 vulkan render pass 的抽象之间在 dynamic 之前自然就是解耦的
+
+看到这些 pipeline 的状态就感觉会有很多都可以用数据驱动的
+
+就不用我 hard code material 类的变体，或者是构造函数的变体，或者之类的
+
+比如 `vk::PipelineColorBlendAttachmentState` 管理 alpha 混合的，和 `vk::PipelineDepthStencilStateCreateInfo` 管理模板测试的之类的，都可以用数据驱动啊
+
+但是这仅仅是想想
+
+现在在写 dynamic rendering 的时候还是不要做这些了
+
+## vkCmdBeginRenderingKHR 时需要的附件信息
+
+使用 `vkCmdBeginRenderingKHR` 时需要转变附件布局，也需要传入 image view 到 info 里面
+
+原来的 vulkan render pass 体系中，这些附件是通过 frame buffer 传入的
+
+现在只是转变成了自己传入附件
+
+并且你传入的附件数实际上跟 framebuffer 时期应该是一样的
+
+如果你自己创建一个 frame buffer 的抽象类的话，甚至可以认为 framebuffer 还在
+
+但是以这么来看的话，subpass 似乎也并没有单独抽象的价值
+
+因为毕竟如果要抽象成单独的类，那么还需要协调怎么传递附件信息
+
+那还不如不协调
+
+那么其实 subpass 并没有抽象解耦的优势
+
+所以优势仅仅是由客户端控制图像布局转换，不需要静态地定义出完整 render pass 的抽象的图像布局，这一点
+
+所以他对代码架构组织并没有帮助
+
+仅仅会影响对 vulkan 的调用风格而已
