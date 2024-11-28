@@ -783,3 +783,95 @@ framebuffer 也是在 deferred 和 forward 之间共享的
 前者可能需要一些复杂的生成胶水代码，后者需要 hard code 一个臃肿的结构
 
 果然还是 dynamic rendering 更好
+
+## 重构
+
+### query_pool 高于 render pass？
+
+以前的 render pass 的 draw 是这样
+
+```cpp
+void EditorForwardLightingPass::Draw(const vk::raii::CommandBuffer& command_buffer)
+{
+    FUNCTION_TIMER();
+
+    m_forward_mat.BindPipeline(command_buffer);
+
+    if (m_query_enabled)
+        command_buffer.beginQuery(*query_pool, 0, {});
+
+    ForwardLightingPass::DrawOnly(command_buffer);
+
+    if (m_query_enabled)
+        command_buffer.endQuery(*query_pool, 0);
+}
+```
+
+现在把 `query_pool` 提到 render pass 之上
+
+```cpp
+void
+ForwardPath::Draw(const vk::raii::CommandBuffer& command_buffer, vk::Extent2D extent, ImageData& color_attachment)
+{
+
+    m_forward_light_pass.Start(command_buffer, extent, color_attachment, m_depth_attachment);
+    m_forward_light_pass.Bind();
+
+#ifdef MEOW_DEBUG
+    if (m_query_enabled)
+        command_buffer.beginQuery(*query_pool, 0, {});
+#endif
+
+    m_forward_light_pass.Draw(command_buffer);
+
+#ifdef MEOW_DEBUG
+    if (m_query_enabled)
+        command_buffer.endQuery(*query_pool, 0);
+#endif
+
+    m_forward_light_pass.End(command_buffer);
+}
+```
+
+于是发现是我 naive
+
+对于多个 subpass 的话，那么还是需要在不同的 subpass 之间做
+
+```cpp
+    void EditorDeferredLightingPass::Draw(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        m_obj2attachment_mat.BindPipeline(command_buffer);
+
+        if (m_query_enabled)
+            command_buffer.beginQuery(*query_pool, 0, {});
+
+        DrawObjOnly(command_buffer);
+
+        if (m_query_enabled)
+            command_buffer.endQuery(*query_pool, 0);
+
+        command_buffer.nextSubpass(vk::SubpassContents::eInline);
+
+        m_quad_mat.BindPipeline(command_buffer);
+
+        if (m_query_enabled)
+            command_buffer.beginQuery(*query_pool, 1, {});
+
+        DrawQuadOnly(command_buffer);
+
+        if (m_query_enabled)
+            command_buffer.endQuery(*query_pool, 1);
+    }
+```
+
+那么其实我觉得，现在的 render pass 应该就单独只管一个 pipeline？
+
+但是仔细一想，后面允许任意 material 的时候，其实也是会导致 query 需要更深入
+
+那么又是一场灾难了
+
+但是看了一下 renderdoc，vulkan query 的这些东西他还真的没有
+
+所以就……之后再说吧，先记着
