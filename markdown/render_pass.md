@@ -875,3 +875,15 @@ ForwardPath::Draw(const vk::raii::CommandBuffer& command_buffer, vk::Extent2D ex
 但是看了一下 renderdoc，vulkan query 的这些东西他还真的没有
 
 所以就……之后再说吧，先记着
+
+### 还是把 query pool 放在 render pass
+
+果然还是要把 query pool 放在 render pass
+
+毕竟一个 render pass 可以有多个 pipeline
+
+然后 query 又是逐 pipeline 的
+
+然后这样 render pass 也不用暴露一个奇怪的 Bind 接口
+
+这种接口就意味着只有一个 pipeline 就很怪
