@@ -955,3 +955,203 @@ ForwardPath::Draw(const vk::raii::CommandBuffer& command_buffer, vk::Extent2D ex
 editor 和 game 的路径混在一起
 
 但是可以共用代码
+
+### local read 的写法
+
+现在才发现 local read 的写法不是我想的那样
+
+根据例子
+
+```cpp
+#if defined(USE_DYNAMIC_RENDERING)
+		// With dynamic rendering and local read there are no render passes
+
+		const std::vector<FrameBufferAttachment> attachment_list = {attachments.positionDepth, attachments.normal, attachments.albedo};
+
+		VkImageSubresourceRange subresource_range_color{};
+		subresource_range_color.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		subresource_range_color.levelCount = VK_REMAINING_MIP_LEVELS;
+		subresource_range_color.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+		VkImageSubresourceRange subresource_range_depth{};
+		subresource_range_depth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		subresource_range_depth.levelCount = VK_REMAINING_MIP_LEVELS;
+		subresource_range_depth.layerCount = VK_REMAINING_ARRAY_LAYERS;
+
+		vkb::image_layout_transition(cmd, swapchain_buffers[i].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, subresource_range_color);
+		vkb::image_layout_transition(cmd, depth_stencil.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, subresource_range_depth);
+
+		VkRenderingAttachmentInfoKHR color_attachment_info[4]{};
+		for (auto j = 0; j < 4; j++)
+		{
+			color_attachment_info[j]             = vkb::initializers::rendering_attachment_info();
+			color_attachment_info[j].imageLayout = VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR;
+			color_attachment_info[j].resolveMode = VK_RESOLVE_MODE_NONE;
+			color_attachment_info[j].loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			color_attachment_info[j].storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+			color_attachment_info[j].clearValue  = clear_values[j];
+		}
+
+		color_attachment_info[0].imageView = swapchain_buffers[i].view;
+		for (auto i = 0; i < 3; i++)
+		{
+			color_attachment_info[i + 1].imageView = attachment_list[i].view;
+		}
+
+		VkRenderingAttachmentInfoKHR depth_attachment_info = vkb::initializers::rendering_attachment_info();
+		depth_attachment_info.imageView                    = depth_stencil.view;
+		depth_attachment_info.imageLayout                  = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		depth_attachment_info.resolveMode                  = VK_RESOLVE_MODE_NONE;
+		depth_attachment_info.loadOp                       = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		depth_attachment_info.storeOp                      = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		depth_attachment_info.clearValue                   = clear_values[1];
+
+		VkRenderingInfoKHR render_info   = vkb::initializers::rendering_info();
+		render_info.renderArea           = {0, 0, width, height};
+		render_info.layerCount           = 1;
+		render_info.colorAttachmentCount = 4;
+		render_info.pColorAttachments    = &color_attachment_info[0];
+		render_info.renderArea           = {0, 0, width, height};
+
+		render_info.pDepthAttachment = &depth_attachment_info;
+		if (!vkb::is_depth_only_format(depth_format))
+		{
+			render_info.pStencilAttachment = &depth_attachment_info;
+		}
+
+		/*
+		    Dynamic rendering start
+		*/
+		vkCmdBeginRenderingKHR(cmd, &render_info);
+
+		VkViewport viewport = vkb::initializers::viewport(static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f);
+		vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+		VkRect2D scissor = vkb::initializers::rect2D(width, height, 0, 0);
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+		/*
+		    First draw
+		    Fills the G-Buffer attachments containing image data for the deferred composition (color+depth, normals, albedo)
+		*/
+
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_opaque_pass.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_opaque_pass.pipeline_layout, 0, 1, &scene_opaque_pass.descriptor_set, 0, nullptr);
+		draw_scene(scenes.opaque, cmd, scene_opaque_pass.pipeline_layout);
+
+		// We want to read the input attachments in the next pass, with dynamic rendering local read this requires use of a barrier with the "by region" flag set
+
+		// A new feature of the dynamic rendering local read extension is the ability to use pipeline barriers in the dynamic render pass
+		// to allow framebuffer-local dependencies (i.e. read-after-write) between draw calls using the "by region" flag
+		// So with this barrier we can use the output attachments from the draw call above as input attachments in the next call
+		VkMemoryBarrier2KHR memoryBarrier{};
+		memoryBarrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2_KHR;
+		memoryBarrier.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+		memoryBarrier.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+		memoryBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+		memoryBarrier.dstAccessMask = VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT;
+
+		VkDependencyInfoKHR dependencyInfo{};
+		dependencyInfo.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR;
+		dependencyInfo.dependencyFlags    = VK_DEPENDENCY_BY_REGION_BIT;
+		dependencyInfo.memoryBarrierCount = 1;
+		dependencyInfo.pMemoryBarriers    = &memoryBarrier;
+
+		vkCmdPipelineBarrier2KHR(cmd, &dependencyInfo);
+
+		/*
+		    Second draw
+		    This will use the G-Buffer attachments that have been filled in the first draw as input attachment for the deferred scene composition
+		*/
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, composition_pass.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, composition_pass.pipeline_layout, 0, 1, &composition_pass.descriptor_set, 0, nullptr);
+		vkCmdDraw(cmd, 3, 1, 0, 0);
+
+		// Third draw
+		// Render transparent geometry using a forward pass that compares against depth generated during the first draw
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_transparent_pass.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scene_transparent_pass.pipeline_layout, 0, 1, &scene_transparent_pass.descriptor_set, 0, nullptr);
+		draw_scene(scenes.transparent, cmd, scene_transparent_pass.pipeline_layout);
+
+		// @todo: UI is disabled for now, required some fixup in the framework to make it work properly with dynamic rendering local reads
+		// draw_ui(draw_cmd_buffers[i]);
+
+		vkCmdEndRenderingKHR(cmd);
+
+		/*
+		    Dynamic rendering end
+		*/
+
+		vkb::image_layout_transition(cmd, swapchain_buffers[i].image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, subresource_range_color);
+#else
+```
+
+实际上是仅仅在一对 `vkCmdBeginRenderingKHR` 和 `vkCmdEndRenderingKHR` 之间的
+
+我之前想的都是，deferred pass 的第一个 subpass 有一对 `vkCmdBeginRenderingKHR` 和 `vkCmdEndRenderingKHR`，第二个 subpass 又有一对
+
+但是不是
+
+这样的话我对 render pass 的 Start 和 End 的抽象看上去就很没有必要了
+
+因为现在什么时候调用 `vkCmdBeginRenderingKHR` 和 `vkCmdEndRenderingKHR` 是不取决于 render pass 的，而是取决于客户端对 render pass 需要的附件的判断
+
+所以就是需要放在外面了
+
+所以现在 render pass 就少了 Start 和 End
+
+### 附件的约定
+
+现在的附件的数量和顺序完全是按照 `vkCmdBeginRenderingKHR` 传入的 info 来的
+
+看了半天才反应过来，这就意味这之后所有的 fragment shader 的 output 的附件的顺序都需要是按照 `vkCmdBeginRenderingKHR` 传入的 info 来
+
+之前用 render pass 的话是可以指定每个 pass 需要什么附件的
+
+```cpp
+vk::AttachmentReference swapchain_attachment_reference {0, vk::ImageLayout::eColorAttachmentOptimal};
+
+std::vector<vk::AttachmentReference> color_attachment_references {
+    {1, vk::ImageLayout::eColorAttachmentOptimal},
+    {2, vk::ImageLayout::eColorAttachmentOptimal},
+    {3, vk::ImageLayout::eColorAttachmentOptimal},
+};
+
+vk::AttachmentReference depth_attachment_reference {4, vk::ImageLayout::eDepthStencilAttachmentOptimal};
+
+std::vector<vk::AttachmentReference> input_attachment_references {
+    {1, vk::ImageLayout::eShaderReadOnlyOptimal},
+    {2, vk::ImageLayout::eShaderReadOnlyOptimal},
+    {3, vk::ImageLayout::eShaderReadOnlyOptimal},
+    {4, vk::ImageLayout::eShaderReadOnlyOptimal},
+};
+
+// Create subpass
+
+std::vector<vk::SubpassDescription> subpass_descriptions {
+    // obj2attachment pass
+    {
+        vk::SubpassDescriptionFlags(),    /* flags */
+        vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+        {},                               /* pInputAttachments */
+        color_attachment_references,      /* pColorAttachments */
+        {},                               /* pResolveAttachments */
+        &depth_attachment_reference,      /* pDepthStencilAttachment */
+        nullptr,                          /* pPreserveAttachments */
+    },
+    // quad rendering pass
+    {
+        vk::SubpassDescriptionFlags(),    /* flags */
+        vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+        input_attachment_references,      /* pInputAttachments */
+        swapchain_attachment_reference,   /* pColorAttachments */
+        {},                               /* pResolveAttachments */
+        {},                               /* pDepthStencilAttachment */
+        nullptr,                          /* pPreserveAttachments */
+    },
+};
+```
+
+但是……算了，总之就是要知道这个事情
+
+这也更加适合在启动了 dynamic rendering 之后，在 render pass 的抽象类的外部启动 `vkCmdBeginRenderingKHR` 和 `vkCmdEndRenderingKHR` 了
