@@ -887,3 +887,71 @@ ForwardPath::Draw(const vk::raii::CommandBuffer& command_buffer, vk::Extent2D ex
 然后这样 render pass 也不用暴露一个奇怪的 Bind 接口
 
 这种接口就意味着只有一个 pipeline 就很怪
+
+### imgui descriptor pool
+
+这个 descriptor pool 放在 window 就很怪
+
+应该在 imgui pass 才对
+
+不过现在一看，似乎是因为要依赖 render pass
+
+于是现在设为 nullptr
+
+```cpp
+        ImGui_ImplGlfw_InitForVulkan(m_glfw_window, true);
+        ImGui_ImplVulkan_InitInfo init_info = {};
+        init_info.Instance                  = *vulkan_instance;
+        init_info.PhysicalDevice            = *physical_device;
+        init_info.Device                    = *logical_device;
+        init_info.QueueFamily               = graphics_queue_family_index;
+        init_info.Queue                     = *graphics_queue;
+        init_info.DescriptorPool            = *m_imgui_descriptor_pool;
+        init_info.Subpass                   = 0;
+        init_info.MinImageCount             = k_max_frames_in_flight;
+        init_info.ImageCount                = k_max_frames_in_flight;
+        init_info.MSAASamples               = VK_SAMPLE_COUNT_1_BIT;
+        init_info.RenderPass                = nullptr;
+```
+
+### 重新初始化
+
+vulkan 重新创建 swapchain image 需要重新初始化 imgui 吗
+
+应该是不需要的
+
+之前只是需要重建用于 imgui 的 Framebuffer
+
+现在是完全不需要了
+
+### imgui 需要的 attachment
+
+可以看到，仅仅是需要 swapchain image 就够了
+
+### forward path
+
+```cpp
+void
+ForwardPath::Draw(const vk::raii::CommandBuffer& command_buffer, vk::Extent2D extent, ImageData& swapchain_image)
+{
+    FUNCTION_TIMER();
+
+#ifdef MEOW_EDITOR
+    m_forward_light_pass.Start(command_buffer, extent, m_offscreen_render_target, m_depth_attachment);
+#else
+    m_forward_light_pass.Start(command_buffer, extent, swapchain_image, m_depth_attachment);
+#endif
+    m_forward_light_pass.Draw(command_buffer);
+    m_forward_light_pass.End(command_buffer);
+
+#ifdef MEOW_EDITOR
+    m_imgui_pass.Start(command_buffer, extent, swapchain_image);
+#endif
+}
+```
+
+这大概是我想做的
+
+editor 和 game 的路径混在一起
+
+但是可以共用代码
