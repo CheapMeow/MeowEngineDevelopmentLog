@@ -1427,3 +1427,23 @@ UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout(ERROR / SPEC): msgNum: 13
 这是由于 render target 在启动的时候我没改回 vk::ImageLayout::eColorAttachmentOptimal
 
 补上就好了
+
+### query pool reset
+
+```
+VUID-vkCmdResetQueryPool-renderpass(ERROR / SPEC): msgNum: -1332528324 - Validation Error: [ VUID-vkCmdResetQueryPool-renderpass ] Object 0: handle = 0x20ccdc1d9f8, type = VK_OBJECT_TYPE_COMMAND_BUFFER; | MessageID = 0xb0933b3c | vkCmdResetQueryPool():  It is invalid to issue this call inside an active VkRenderPass 0x0[]. The Vulkan spec states: This command must only be called outside of a render pass instance (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdResetQueryPool-renderpass)
+    Objects: 1
+        [0] 0x20ccdc1d9f8, type: 6, name: NULL
+```
+
+于是特意做了一个 `BeforeRender`
+
+```cpp
+m_forward_light_pass.BeforeRender(command_buffer);
+
+command_buffer.beginRenderingKHR(rendering_info);
+
+m_forward_light_pass.Draw(command_buffer);
+
+command_buffer.endRenderingKHR();
+```
