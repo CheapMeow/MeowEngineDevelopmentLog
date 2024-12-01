@@ -179,3 +179,75 @@ UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout(ERROR / SPEC): msgNum: 13
 我搜了一下，别人也是这样想
 
 [https://gamedev.net/forums/topic/494832-skybox-mip-maps/4227380/](https://gamedev.net/forums/topic/494832-skybox-mip-maps/4227380/)
+
+## 同一个 pass
+
+看了 piccolo
+
+```cpp
+m_rhi->cmdNextSubpassPFN(m_rhi->getCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+
+float color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+m_rhi->pushEvent(m_rhi->getCurrentCommandBuffer(), "Forward Lighting", color);
+
+drawMeshLighting();
+drawSkybox();
+particle_pass.draw();
+
+m_rhi->popEvent(m_rhi->getCurrentCommandBuffer());
+
+m_rhi->cmdNextSubpassPFN(m_rhi->getCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+```
+
+人家就是直接在同一个 pass 画 mesh lighting 和 skybox 的
+
+## 纹理是黑色的
+
+可以输出 stb 读取的第一个纹理，来验证 stb 读到了值
+
+```cpp
+uint32_t FileSystem::ReadImageFileToPtr(std::string const& file_path, uint8_t* data_ptr)
+{
+    FUNCTION_TIMER();
+
+    if (!Exists(file_path))
+    {
+        MEOW_ERROR("Image at {} not found!", file_path);
+        return 0;
+    }
+
+    int texture_width, texture_height, texture_channels;
+
+    auto absolute_file_path = m_root_path / file_path;
+    absolute_file_path      = absolute_file_path.lexically_normal();
+
+    stbi_uc* pixels = stbi_load(
+        absolute_file_path.string().c_str(), &texture_width, &texture_height, &texture_channels, STBI_rgb_alpha);
+    uint32_t data_size = texture_width * texture_height * 4;
+
+    std::cout << "First pixel RGBA: " << static_cast<int>(pixels[0]) << ", " << static_cast<int>(pixels[1]) << ", "
+                << static_cast<int>(pixels[2]) << ", " << static_cast<int>(pixels[3]) << std::endl;
+
+    if (!pixels)
+    {
+        MEOW_WARN("Failed to load texture file: {}", file_path);
+        return 0;
+    }
+
+    memcpy(data_ptr, pixels, data_size);
+
+    return data_size;
+}
+```
+
+那么全黑的纹理就不是 stb 的问题
+
+之后发现了，是我要 load float
+
+然后之前是一个 R 或 G 或 B 就是一个字节 uint8_t
+
+所以是 `长*高*4`
+
+现在是 R 或 G 或 B 就是一个 float 四个字节
+
+所以是 `长*高*4*4`
