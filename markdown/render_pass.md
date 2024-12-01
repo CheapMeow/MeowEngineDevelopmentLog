@@ -1353,7 +1353,7 @@ static void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface
 
 ```
 
-## swapchain 
+### swapchain 
 
 为了 swapchain 能够提供我的 image data 类
 
@@ -1414,3 +1414,16 @@ namespace Meow
 在外面记录
 
 于是改了
+
+### DrawState InvalidImageLayout
+
+```
+UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout(ERROR / SPEC): msgNum: 1303270965 - Validation Error: [ UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout ] Object 0: handle = 0x28d9da0ab68, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0x93d4f20000000089, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0x4dae5635 | vkQueueSubmit(): pSubmits[0].pCommandBuffers[0] command buffer VkCommandBuffer 0x28d9da0ab68[] expects VkImage 0x93d4f20000000089[] (subresource: aspectMask 0x1 array layer 0, mip level 0) to be in layout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL--instead, current layout is VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL.
+    Objects: 2
+        [0] 0x28d9da0ab68, type: 6, name: NULL
+        [1] 0x93d4f20000000089, type: 10, name: NULL
+```
+
+这是由于 render target 在启动的时候我没改回 vk::ImageLayout::eColorAttachmentOptimal
+
+补上就好了
