@@ -1159,3 +1159,258 @@ std::vector<vk::SubpassDescription> subpass_descriptions {
 还有一个影响就是，如果你有多个 subpass，其中一个 subpass 是需要向交换链图像写入东西的话，那么虽然其他的 subpass 用不到这个图像，这些 subpass 里面的 shader 仍然要考虑到这个交换链图像的占位
 
 因为你一次绑定的图像适用于所有的 subpass 了嘛
+
+### swap
+
+我对 swap 的使用有问题
+
+这个乍一看没有问题
+
+```cpp
+    void swap(ForwardLightingPass& lhs, ForwardLightingPass& rhs)
+    {
+        using std::swap;
+
+        swap(lhs.m_forward_lighting_mat, rhs.m_forward_lighting_mat);
+        swap(lhs.m_skybox_mat, rhs.m_skybox_mat);
+    }
+```
+
+但是如果他的上一层调用了他
+
+```cpp
+    void swap(ForwardPath& lhs, ForwardPath& rhs)
+    {
+        using std::swap;
+
+        swap(lhs.m_forward_light_pass, rhs.m_forward_light_pass);
+    }
+```
+
+`void swap(ForwardPath& lhs, ForwardPath& rhs)` 会直接调用 `void swap(ForwardLightingPass& lhs, ForwardLightingPass& rhs)`
+
+但是我的 `void swap(ForwardLightingPass& lhs, ForwardLightingPass& rhs)` 如果还有基类
+
+我还想这么用的时候
+
+```cpp
+class ForwardLightingPass : public RenderPass
+{
+public:
+    ForwardLightingPass(std::nullptr_t)
+        : RenderPass(nullptr)
+    {}
+
+    ForwardLightingPass(ForwardLightingPass&& rhs) noexcept
+        : RenderPass(std::move(rhs))
+    {
+        swap(*this, rhs);
+    }
+
+    ForwardLightingPass& operator=(ForwardLightingPass&& rhs) noexcept
+    {
+        if (this != &rhs)
+        {
+            RenderPass::operator=(std::move(rhs));
+
+            swap(*this, rhs);
+        }
+        return *this;
+    }
+```
+
+那就不对了
+
+因为 `ForwardLightingPass` 的 `swap` 仅仅管理自己的成员
+
+结果被更上层的调用 swap 之后，`ForwardLightingPass` 的子类的内容没有 `swap`
+
+所以实际上使用应该转到基类
+
+并且移动拷贝和移动赋值不应该那么写
+
+但是问题就来了，移动拷贝需要调用一个不做任何事情的基类构造
+
+default 解决不了问题
+
+```cpp
+#include <iostream>
+
+class A
+{
+public:
+    A() { arr = new int[100]; }
+    virtual ~A() { delete[] arr; }
+
+    A(const A&)                = delete;
+    A(A&&) noexcept            = default;
+    A& operator=(const A&)     = delete;
+    A& operator=(A&&) noexcept = default;
+
+    int* arr = nullptr;
+};
+
+class B : public A
+{
+public:
+    B()
+        : A()
+    {
+        arr2 = new int[100];
+    }
+
+    ~B() override { delete[] arr2; }
+
+    B(B&&) noexcept            = default;
+    B& operator=(B&&) noexcept = default;
+
+    int* arr2 = nullptr;
+};
+
+int main()
+{
+    B b1;
+
+    std::cout << b1.arr << std::endl;
+    std::cout << b1.arr2 << std::endl;
+
+    B b2 = std::move(b1);
+
+    std::cout << b1.arr << std::endl;
+    std::cout << b1.arr2 << std::endl;
+
+    std::cout << b2.arr << std::endl;
+    std::cout << b2.arr2 << std::endl;
+
+    return 0;
+}
+```
+
+输出
+
+```
+00000230430F6500
+00000230430F66D0
+00000230430F6500
+00000230430F66D0
+00000230430F6500
+00000230430F66D0
+```
+
+可见默认的 default 是复制而不是 swap
+
+### dynamicRenderingUnusedAttachments
+
+```
+VUID-vkCmdDrawIndexed-dynamicRenderingUnusedAttachments-08910(ERROR / SPEC): msgNum: 1284683401 - Validation Error: [ VUID-vkCmdDrawIndexed-dynamicRenderingUnusedAttachments-08910 ] Object 0: handle = 0x1a1320de298, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0x2b424a0000000034, type = VK_OBJECT_TYPE_PIPELINE; | MessageID = 0x4c92b689 | vkCmdDrawIndexed():  VkRenderingInfo::pColorAttachments[0].imageView format (VK_FORMAT_B8G8R8A8_UNORM) must match corresponding format in VkPipelineRenderingCreateInfo::pColorAttachmentFormats[0] (VK_FORMAT_R8G8B8A8_UNORM). The Vulkan spec states: If the dynamicRenderingUnusedAttachments feature is not enabled, and the current render pass instance was begun with vkCmdBeginRendering and VkRenderingInfo::colorAttachmentCount greater than 0, then each element of the VkRenderingInfo::pColorAttachments array with an imageView not equal to VK_NULL_HANDLE must have been created with a VkFormat equal to the corresponding element of VkPipelineRenderingCreateInfo::pColorAttachmentFormats used to create the currently bound graphics pipeline (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-dynamicRenderingUnusedAttachments-08910)
+    Objects: 2
+        [0] 0x1a1320de298, type: 6, name: NULL
+        [1] 0x2b424a0000000034, type: 19, name: NULL
+```
+
+于是发现是我的 material hard code 的 format 不对啊
+
+我的 surface 是 eB8G8R8A8Unorm
+
+但是我之前写的是 eR8G8B8A8Unorm
+
+imgui 用的是 eR8G8B8A8Unorm
+
+于是我把所有的都改成 eR8G8B8A8Unorm
+
+但是不知道哪里还有 eB8G8R8A8Unorm 在报错
+
+还是 `VkRenderingInfo::pColorAttachments[0].imageView format (VK_FORMAT_B8G8R8A8_UNORM) must match corresponding format`
+
+这就不太合理啊
+
+如果我全部改成 `eB8G8R8A8Unorm`
+
+imgui 中的图像就会变蓝
+
+但是很奇怪啊，imgui 的 swapchain 也应该是 `eB8G8R8A8Unorm`
+
+```cpp
+// All the ImGui_ImplVulkanH_XXX structures/functions are optional helpers used by the demo.
+// Your real engine/app may not use them.
+static void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int width, int height)
+{
+    wd->Surface = surface;
+
+    // Check for WSI support
+    VkBool32 res;
+    vkGetPhysicalDeviceSurfaceSupportKHR(g_PhysicalDevice, g_QueueFamily, wd->Surface, &res);
+    if (res != VK_TRUE)
+    {
+        fprintf(stderr, "Error no WSI support on physical device 0\n");
+        exit(-1);
+    }
+
+    // Select Surface Format
+    const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
+    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+    wd->SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(g_PhysicalDevice, wd->Surface, requestSurfaceImageFormat, (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+
+```
+
+## swapchain 
+
+为了 swapchain 能够提供我的 image data 类
+
+我自己又封了一下
+
+```cpp
+#include "swapchain_data.h"
+
+namespace Meow
+{
+    SwapChainData::SwapChainData(const vk::raii::PhysicalDevice& physical_device,
+                                 const vk::raii::Device&         logical_device,
+                                 const vk::raii::SurfaceKHR&     surface,
+                                 const vk::Extent2D&             extent,
+                                 vk::ImageUsageFlags             usage,
+                                 const vk::raii::SwapchainKHR*   p_old_swapchain,
+                                 uint32_t                        graphics_queue_family_index,
+                                 uint32_t                        present_queue_family_index)
+    {
+        ...
+
+        swap_chain = vk::raii::SwapchainKHR(logical_device, swap_chain_create_info);
+
+        auto vk_images = swap_chain.getImages();
+
+        vk::ImageViewCreateInfo image_view_create_info(
+            {}, {}, vk::ImageViewType::e2D, color_format, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+        for (std::size_t i = 0; i < vk_images.size(); ++i)
+        {
+            images.emplace_back(nullptr);
+            images[i].image              = vk::raii::Image(logical_device, vk_images[i]);
+            image_view_create_info.image = vk_images[i];
+            images[i].image_view         = vk::raii::ImageView(logical_device, image_view_create_info);
+            images[i].aspect_mask        = vk::ImageAspectFlagBits::eColor;
+        }
+    }
+} // namespace Meow
+```
+
+但是这样会导致重复释放
+
+我是有点蠢的
+
+之前想这么做是因为 `TransitLayout` 是 `ImageData` 类的成员函数
+
+但是现在一想，真的需要吗
+
+于是看到 `TransitLayout` 只是用了 `vk::Image` 而已
+
+所以不一定是要是 `ImageData` 类的成员函数
+
+但是他也是有点用的
+
+因为他这里改了 imagedata 的 layout
+
+但是当然我们可以不在函数里记录这个东西
+
+在外面记录
+
+于是改了
