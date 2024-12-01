@@ -1155,3 +1155,7 @@ std::vector<vk::SubpassDescription> subpass_descriptions {
 但是……算了，总之就是要知道这个事情
 
 这也更加适合在启动了 dynamic rendering 之后，在 render pass 的抽象类的外部启动 `vkCmdBeginRenderingKHR` 和 `vkCmdEndRenderingKHR` 了
+
+还有一个影响就是，如果你有多个 subpass，其中一个 subpass 是需要向交换链图像写入东西的话，那么虽然其他的 subpass 用不到这个图像，这些 subpass 里面的 shader 仍然要考虑到这个交换链图像的占位
+
+因为你一次绑定的图像适用于所有的 subpass 了嘛
