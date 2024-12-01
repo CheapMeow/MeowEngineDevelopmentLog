@@ -1447,3 +1447,20 @@ m_forward_light_pass.Draw(command_buffer);
 
 command_buffer.endRenderingKHR();
 ```
+
+### input attachment
+
+```
+VUID-VkGraphicsPipelineCreateInfo-renderPass-06061(ERROR / SPEC): msgNum: 966462046 - Validation Error: [ VUID-VkGraphicsPipelineCreateInfo-renderPass-06061 ] | MessageID = 0x399b0a5e | vkCreateGraphicsPipelines(): pCreateInfos[0].pStages[1] is being created with fragment shader state and renderPass = VK_NULL_HANDLE, but fragment shader includes InputAttachment capability. The Vulkan spec states: If the dynamicRenderingLocalRead feature is not enabled, the pipeline requires fragment shader state, and renderPass is VK_NULL_HANDLE, fragment shaders in pStages must not include the InputAttachment capability (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkGraphicsPipelineCreateInfo-renderPass-06061)
+    Objects: 0
+```
+
+这个是真的看不出来我的绑定哪里有问题了
+
+把图像创建的时候的 inputattachment usage 删了，也没用
+
+看来关键是 `but fragment shader includes InputAttachment capability.`
+
+但是我还真不知道怎么解决这个问题
+
+我不知道 shader 里面不写 input attachment 该写什么
