@@ -251,3 +251,11 @@ uint32_t FileSystem::ReadImageFileToPtr(std::string const& file_path, uint8_t* d
 现在是 R 或 G 或 B 就是一个 float 四个字节
 
 所以是 `长*高*4*4`
+
+## 没有绘制的 bug
+
+还是需要 vulkan 的 query 才能看到更多信息
+
+比如 frag invocation 现在可以看到是 0
+
+说明根本没有画
