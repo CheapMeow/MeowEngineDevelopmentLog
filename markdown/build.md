@@ -602,3 +602,103 @@ end)
 这就很难顶了
 
 然后去看 compile_command.json 也没问题
+
+## cmake 
+
+之前就看过这个
+
+[https://stackoverflow.com/questions/20638963/cmake-behaviour-custom-configuration-types-with-visual-studio-need-multiple-cma](https://stackoverflow.com/questions/20638963/cmake-behaviour-custom-configuration-types-with-visual-studio-need-multiple-cma)
+
+于是我想自己把 `CMAKE_CONFIGURATION_TYPES` 都删了，结果似乎不行
+
+```cmake
+cmake_minimum_required(VERSION 3.24)
+# Set Project Name
+project (s4)
+
+# Edit available Configrations to make them available in IDE that support multiple-configuration (for example Visual Studio)
+# has to be between "project" and "enable_language" to work as intended!
+set(CMAKE_CONFIGURATION_TYPES Debugverbose CACHE STRING "Append user-defined configuration to list of configurations to make it usable in Visual Studio" FORCE)
+# Set Source Language
+enable_language (CXX)
+
+add_executable(TestMain ./src/main.cpp)
+```
+
+这么做会导致 cmake 错误，说是找不到 debug 配置（明明我根本不需要）
+
+```
+E:\software\Microsoft Visual Studio\2022\Community\MSBuild\Microsoft\VC\v170\Microsoft.CppBuil
+d.targets(452,5): error MSB8013: 此项目不包含配置和平台组合 Debug|x64。 [E:\repositories\Playground\test_cus
+tom_configuration\build-debug\ZERO_CHECK.vcxproj]
+```
+
+应该是 vs 那边的要求
+
+但是打开 vs 工程之后对我的配置来构建还是可以的
+
+然后这个回答讲述了多重配置生成器和 makefile 配置生成器的区别
+
+[https://stackoverflow.com/questions/31546278/where-to-set-cmake-configuration-types-in-a-project-with-subprojects](https://stackoverflow.com/questions/31546278/where-to-set-cmake-configuration-types-in-a-project-with-subprojects)
+
+虽然我觉得 vs 也尊重我的 `CMAKE_BUILD_TYPE`
+
+他指的应该是 cmakelists 处理过程中 `CMAKE_BUILD_TYPE` 没有意义？
+
+但是他的原始回答就可以
+
+```cmake
+cmake_minimum_required(VERSION 3.24)
+# Set Project Name
+project (s4)
+
+# Edit available Configrations to make them available in IDE that support multiple-configuration (for example Visual Studio)
+# has to be between "project" and "enable_language" to work as intended!
+if(CMAKE_CONFIGURATION_TYPES)
+   list(APPEND CMAKE_CONFIGURATION_TYPES Debugverbose)
+   set(CMAKE_CONFIGURATION_TYPES Debugverbose CACHE STRING "Append user-defined configuration to list of configurations to make it usable in Visual Studio" FORCE)
+endif()
+
+# Set Source Language
+enable_language (CXX)
+
+add_executable(TestMain ./src/main.cpp)
+```
+
+虽然还是有一点报错
+
+```
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.22631.
+-- The C compiler identification is MSVC 19.38.33141.0
+-- The CXX compiler identification is MSVC 19.38.33141.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: E:/software/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: E:/software/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (3.1s)
+CMake Error: Error required internal CMake variable not set, cmake may not be built correctly.
+Missing variable is:
+CMAKE_EXE_LINKER_FLAGS_DEBUGVERBOSE
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_BUILD_TYPE
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+适用于 .NET Framework MSBuild 版本 17.11.9+a69bbaaf5
+
+  1>Checking Build System
+  Building Custom Rule E:/repositories/Playground/test_custom_configuration/CMakeLists.txt
+  main.cpp
+  TestMain.vcxproj -> E:\repositories\Playground\test_custom_configuration\build-debug\Debug\T
+  estMain.exe
+  Building Custom Rule E:/repositories/Playground/test_custom_configuration/CMakeLists.txt
+```
