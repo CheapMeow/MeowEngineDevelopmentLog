@@ -259,3 +259,72 @@ uint32_t FileSystem::ReadImageFileToPtr(std::string const& file_path, uint8_t* d
 比如 frag invocation 现在可以看到是 0
 
 说明根本没有画
+
+换个反面就好了
+
+## 多次绘制的 bug
+
+抄的别人的绘制六次
+
+```cpp
+        // skybox
+
+        static glm::mat4 capture_views[] = {
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)),
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)),
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f)),
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, -1.0f, 0.0f)),
+            glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, -1.0f, 0.0f))};
+
+        m_skybox_mat.BeginPopulatingDynamicUniformBufferPerFrame();
+        per_scene_data.projection = Math::perspective_vk(
+            glm::radians(90.0f), static_cast<float>(window_size[0]) / static_cast<float>(window_size[1]), 0.1f, 10.0f);
+        for (uint32_t i = 0; i < 6; ++i)
+        {
+            m_skybox_mat.BeginPopulatingDynamicUniformBufferPerObject();
+            per_scene_data.view = capture_views[i];
+            m_skybox_mat.PopulateDynamicUniformBuffer("sceneData", &per_scene_data, sizeof(per_scene_data));
+            m_skybox_mat.EndPopulatingDynamicUniformBufferPerObject();
+        }
+        m_skybox_mat.EndPopulatingDynamicUniformBufferPerFrame();
+```
+
+```cpp
+    void ForwardPass::RenderSkybox(const vk::raii::CommandBuffer& command_buffer)
+    {
+        FUNCTION_TIMER();
+
+        m_skybox_mat.BindDescriptorSetToPipeline(command_buffer, 0, 1);
+
+        for (uint32_t i = 0; i < 6; ++i)
+        {
+            m_skybox_mat.BindDescriptorSetToPipeline(command_buffer, 1, 1, i, true);
+            m_skybox_model.meshes[0]->BindDrawCmd(command_buffer);
+            ++draw_call[1];
+        }
+    }
+```
+
+但是我可能是没想清楚
+
+实际上他这个绘制六次应该是进行天空盒的转换
+
+我现在有现成的天空盒贴图之后，我应该直接画一次，使用我的摄像机方向
+
+```cpp
+        per_scene_data.view = lookAt(glm::vec3(0.0f), glm::vec3(0.0f) + forward, glm::vec3(0.0f, 1.0f, 0.0f));
+        m_skybox_mat.PopulateUniformBuffer("sceneData", &per_scene_data, sizeof(per_scene_data));
+```
+
+现在就好了
+
+但是深度测试有点问题，我的天空盒把所有的都遮住了
+
+这是因为天空盒的深度应该是 1
+
+```glsl
+gl_Position = gl_Position.xyww;
+```
+
+把 w 分量设置为 z，那么透视除法之后就是 1
