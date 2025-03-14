@@ -328,3 +328,34 @@ gl_Position = gl_Position.xyww;
 ```
 
 把 w 分量设置为 z，那么透视除法之后就是 1
+
+把物体固定在远平面
+
+## 图片位置不对的问题
+
+现在虽然显示出来了天空盒，但是图片的位置都不对
+
+因为不同的 skybox 面有点类似，所以直接看是很难分出来怎么错了
+
+于是我直接写了 X+ X- Y+ Y- Z+ Z- 的字样做成 HDR
+
+vulkan 是 X 向右，Z 向屏幕内侧，Y 向下
+
+![alt text](../assets/graphics_api_crood.png)
+
+使用 Y 方向 flip，于是现在是 X 向右，Z 向屏幕内侧，Y 向上，现在是左手系了
+
+但是 cubemap 是在右手系下生成的
+
+于是实际写 cubemap 贴图的时候把 y 和 z 对换一下，变成右手系
+
+```cpp
+auto texture_ptr = ImageData::CreateCubemap({
+    "builtin/textures/cubemap/skybox_specular_X+.hdr",
+    "builtin/textures/cubemap/skybox_specular_X-.hdr",
+    "builtin/textures/cubemap/skybox_specular_Z+.hdr",
+    "builtin/textures/cubemap/skybox_specular_Z-.hdr",
+    "builtin/textures/cubemap/skybox_specular_Y+.hdr",
+    "builtin/textures/cubemap/skybox_specular_Y-.hdr",
+});
+```
