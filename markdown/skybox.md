@@ -359,3 +359,7 @@ auto texture_ptr = ImageData::CreateCubemap({
     "builtin/textures/cubemap/skybox_specular_Y-.hdr",
 });
 ```
+
+## 延迟渲染中实现天空盒
+
+也是类似的加 subpass，在 quad 之后渲染就好了，shader 都不用改

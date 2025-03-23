@@ -702,3 +702,49 @@ CMake Generate step failed.  Build files cannot be regenerated correctly.
   estMain.exe
   Building Custom Rule E:/repositories/Playground/test_custom_configuration/CMakeLists.txt
 ```
+
+## cmake 仅仅更改一个文件就导致所有项目重新构建
+
+cmake 仅仅更改一个文件就导致所有项目重新构建，我猜是因为我写了
+
+```cmake
+cmake_minimum_required(VERSION 3.24)
+
+# should ahead of project
+
+set(CMAKE_CXX_FLAGS_EDITORDEBUG
+    "/Zi /Ob0 /Od /RTC1 /DMEOW_EDITOR /DMEOW_DEBUG"
+    CACHE STRING "")
+set(CMAKE_CXX_FLAGS_GAMEDEBUG
+    "/Zi /Ob0 /Od /RTC1 /DMEOW_DEBUG"
+    CACHE STRING "")
+set(CMAKE_CXX_FLAGS_EDITORRELEASE
+    "/O2 /Ob2 /DNDEBUG /DMEOW_EDITOR"
+    CACHE STRING "")
+set(CMAKE_CXX_FLAGS_GAMERELEASE
+    "/O2 /Ob2 /DNDEBUG"
+    CACHE STRING "")
+
+set(CMAKE_EXE_LINKER_FLAGS_EDITORDEBUG
+    "/debug /INCREMENTAL"
+    CACHE STRING "")
+set(CMAKE_EXE_LINKER_FLAGS_GAMEDEBUG
+    "/debug /INCREMENTAL"
+    CACHE STRING "")
+set(CMAKE_EXE_LINKER_FLAGS_EDITORRELEASE
+    "/INCREMENTAL:NO"
+    CACHE STRING "")
+set(CMAKE_EXE_LINKER_FLAGS_GAMERELEASE
+    "/INCREMENTAL:NO"
+    CACHE STRING "")
+
+project(MeowEngine LANGUAGES NONE)
+```
+
+的问题，但是我不敢肯定
+
+于是发现确实是设置 cache 的问题
+
+每次 config 都设置 cache 就导致 cache 被刷新，就导致全量编译
+
+现在加了一个条件判断就好了
