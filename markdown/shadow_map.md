@@ -159,3 +159,15 @@ VUID-vkCmdDraw-None-08600(ERROR / SPEC): msgNum: 1198051129 - Validation Error: 
 ```
 
 没 UpdateUniformBuffer 导致没有绑 dynamic uniform buffer offset
+
+## size
+
+画出来的 shadow map 都是一片白色
+
+并且 shadow map 绘制的尺寸没有全屏绘制
+
+因为我对 shadow map 的尺寸要求还是 swap chain 的尺寸
+
+于是 framebuffer 的尺寸和 render pass start 的尺寸都要跟着改
+
+这样看来的话，确实是需要一个 render target 作为 render pass 的接口参数比较好
