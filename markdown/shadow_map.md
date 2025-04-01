@@ -287,3 +287,13 @@ void buildCommandBuffers()
 他这个就是启动两个 render pass，然后在每一个 render pass 的开头设置裁剪大小
 
 于是我把 viewport 和 scissor 放到 render pass 里面就好了
+
+## 阴影质量很差
+
+调一下阴影的角度就知道现在的阴影质量很差
+
+![](../assets/bad_shadow.png)
+
+截帧发现，使用的 shadow map 渲染的结果非常差
+
+![alt text](../assets/bad_shadow_map.png)
