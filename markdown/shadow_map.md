@@ -171,3 +171,119 @@ VUID-vkCmdDraw-None-08600(ERROR / SPEC): msgNum: 1198051129 - Validation Error: 
 于是 framebuffer 的尺寸和 render pass start 的尺寸都要跟着改
 
 这样看来的话，确实是需要一个 render target 作为 render pass 的接口参数比较好
+
+## 绘制范围
+
+绘制范围出错
+
+![alt text](../assets/shadow_map_error_range.png)
+
+看了别人是怎么做的
+
+[https://github.com/SaschaWillems/Vulkan.git](https://github.com/SaschaWillems/Vulkan.git)
+
+examples\shadowmapping\shadowmapping.cpp
+
+```cpp
+void buildCommandBuffers()
+{
+    VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+
+    VkClearValue clearValues[2];
+    VkViewport viewport;
+    VkRect2D scissor;
+
+    for (int32_t i = 0; i < drawCmdBuffers.size(); ++i)
+    {
+        VK_CHECK_RESULT(vkBeginCommandBuffer(drawCmdBuffers[i], &cmdBufInfo));
+
+        /*
+            First render pass: Generate shadow map by rendering the scene from light's POV
+        */
+        {
+            clearValues[0].depthStencil = { 1.0f, 0 };
+
+            VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+            renderPassBeginInfo.renderPass = offscreenPass.renderPass;
+            renderPassBeginInfo.framebuffer = offscreenPass.frameBuffer;
+            renderPassBeginInfo.renderArea.extent.width = offscreenPass.width;
+            renderPassBeginInfo.renderArea.extent.height = offscreenPass.height;
+            renderPassBeginInfo.clearValueCount = 1;
+            renderPassBeginInfo.pClearValues = clearValues;
+
+            vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            viewport = vks::initializers::viewport((float)offscreenPass.width, (float)offscreenPass.height, 0.0f, 1.0f);
+            vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+
+            scissor = vks::initializers::rect2D(offscreenPass.width, offscreenPass.height, 0, 0);
+            vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+
+            // Set depth bias (aka "Polygon offset")
+            // Required to avoid shadow mapping artifacts
+            vkCmdSetDepthBias(
+                drawCmdBuffers[i],
+                depthBiasConstant,
+                0.0f,
+                depthBiasSlope);
+
+            vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.offscreen);
+            vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.offscreen, 0, nullptr);
+            scenes[sceneIndex].draw(drawCmdBuffers[i]);
+
+            vkCmdEndRenderPass(drawCmdBuffers[i]);
+        }
+
+        /*
+            Note: Explicit synchronization is not required between the render pass, as this is done implicit via sub pass dependencies
+        */
+
+        /*
+            Second pass: Scene rendering with applied shadow map
+        */
+
+        {
+            clearValues[0].color = defaultClearColor;
+            clearValues[1].depthStencil = { 1.0f, 0 };
+
+            VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+            renderPassBeginInfo.renderPass = renderPass;
+            renderPassBeginInfo.framebuffer = frameBuffers[i];
+            renderPassBeginInfo.renderArea.extent.width = width;
+            renderPassBeginInfo.renderArea.extent.height = height;
+            renderPassBeginInfo.clearValueCount = 2;
+            renderPassBeginInfo.pClearValues = clearValues;
+
+            vkCmdBeginRenderPass(drawCmdBuffers[i], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            viewport = vks::initializers::viewport((float)width, (float)height, 0.0f, 1.0f);
+            vkCmdSetViewport(drawCmdBuffers[i], 0, 1, &viewport);
+
+            scissor = vks::initializers::rect2D(width, height, 0, 0);
+            vkCmdSetScissor(drawCmdBuffers[i], 0, 1, &scissor);
+
+            // Visualize shadow map
+            if (displayShadowMap) {
+                vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.debug, 0, nullptr);
+                vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.debug);
+                vkCmdDraw(drawCmdBuffers[i], 3, 1, 0, 0);
+            } else {
+                // Render the shadows scene
+                vkCmdBindDescriptorSets(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets.scene, 0, nullptr);
+                vkCmdBindPipeline(drawCmdBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, (filterPCF) ? pipelines.sceneShadowPCF : pipelines.sceneShadow);
+                scenes[sceneIndex].draw(drawCmdBuffers[i]);
+            }
+
+            drawUI(drawCmdBuffers[i]);
+
+            vkCmdEndRenderPass(drawCmdBuffers[i]);
+        }
+
+        VK_CHECK_RESULT(vkEndCommandBuffer(drawCmdBuffers[i]));
+    }
+}
+```
+
+他这个就是启动两个 render pass，然后在每一个 render pass 的开头设置裁剪大小
+
+于是我把 viewport 和 scissor 放到 render pass 里面就好了
