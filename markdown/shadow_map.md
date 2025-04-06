@@ -297,3 +297,161 @@ void buildCommandBuffers()
 截帧发现，使用的 shadow map 渲染的结果非常差
 
 ![alt text](../assets/bad_shadow_map.png)
+
+## 渲染阴影贴图时出现的 layout 问题
+
+```
+VUID-VkDescriptorImageInfo-imageLayout-00344(ERROR / SPEC): msgNum: -564812795 - Validation Error: [ VUID-VkDescriptorImageInfo-imageLayout-00344 ] Object 0: handle = 0x16435a1ec10, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0xb097c90000000027, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0xde55a405 | vkCmdDrawIndexed():  Cannot use VkImage 0xb097c90000000027[] (layer=0 mip=0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL that doesn't match the previous known layout VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL. The Vulkan spec states: imageLayout must match the actual VkImageLayout of each subresource accessible from imageView at the time this descriptor is accessed as defined by the image layout matching rules (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-VkDescriptorImageInfo-imageLayout-00344)
+    Objects: 2
+        [0] 0x16435a1ec10, type: 6, name: NULL
+        [1] 0xb097c90000000027, type: 10, name: NULL
+VUID-vkCmdDrawIndexed-None-08114(ERROR / SPEC): msgNum: 1064294454 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08114 ] Object 0: handle = 0x980b0000000002e, name = Depth to Color Material DescriptorSet0, type = VK_OBJECT_TYPE_DESCRIPTOR_SET; | MessageID = 0x3f6fd836 | vkCmdDrawIndexed():  Descriptor set VkDescriptorSet 0x980b0000000002e[Depth to Color Material DescriptorSet0] Image layout specified by vkCmdBindDescriptorSets doesn't match actual image layout at time descriptor is used. See previous error callback for specific details. The Vulkan spec states: Descriptors in each bound descriptor set, specified via vkCmdBindDescriptorSets, must be valid as described by descriptor validity if they are statically used by the VkPipeline bound to the pipeline bind point used by this command and the bound VkPipeline was not created with VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT (https://vulkan.lunarg.com/doc/view/1.3.290.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08114)
+    Objects: 1
+        [0] 0x980b0000000002e, type: 23, name: Depth to Color Material DescriptorSet0
+```
+
+程序要求的格式（正确格式）是 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+
+这是在描述符集（DescriptorSet）中指定的布局，表示着色器期望以只读方式访问该图像。
+
+当前实际格式（错误格式）是 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+
+这是图像当前的布局状态，表示该图像被用作深度/模板附件
+
+但是我应该确实是 color attachment 啊
+
+于是发现是我的 shadow map 仅仅是在
+
+```cpp
+        std::vector<vk::AttachmentDescription> attachment_descriptions;
+
+        attachment_descriptions = {
+            // depth attachment
+            {
+                vk::AttachmentDescriptionFlags(),        /* flags */
+                m_depth_format,                          /* format */
+                vk::SampleCountFlagBits::e1,             /* samples */
+                vk::AttachmentLoadOp::eClear,            /* loadOp */
+                vk::AttachmentStoreOp::eStore,           /* storeOp */
+                vk::AttachmentLoadOp::eClear,            /* stencilLoadOp */
+                vk::AttachmentStoreOp::eStore,           /* stencilStoreOp */
+                vk::ImageLayout::eUndefined,             /* initialLayout */
+                vk::ImageLayout::eShaderReadOnlyOptimal, /* finalLayout */
+            },
+#ifdef MEOW_EDITOR
+            // depth to color attachment
+            {
+                vk::AttachmentDescriptionFlags(),         /* flags */
+                m_color_format,                           /* format */
+                vk::SampleCountFlagBits::e1,              /* samples */
+                vk::AttachmentLoadOp::eClear,             /* loadOp */
+                vk::AttachmentStoreOp::eStore,            /* storeOp */
+                vk::AttachmentLoadOp::eDontCare,          /* stencilLoadOp */
+                vk::AttachmentStoreOp::eDontCare,         /* stencilStoreOp */
+                vk::ImageLayout::eUndefined,              /* initialLayout */
+                vk::ImageLayout::eColorAttachmentOptimal, /* finalLayout */
+            },
+#endif
+        };
+```
+
+这里指定了布局转换
+
+但是这里的转换是在 render pass 结束的时候的转换，管不到 subpass
+
+难道 subpass 就没有办法控制了吗？是可以的，在 SubpassDescription
+
+之前我写的是
+
+```cpp
+        vk::AttachmentReference depth_attachment_reference(0, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+#ifdef MEOW_EDITOR
+        vk::AttachmentReference color_attachment_reference(1, vk::ImageLayout::eColorAttachmentOptimal);
+#endif
+
+        std::vector<vk::SubpassDescription> subpass_descriptions {
+            // shadow map pass
+            {
+                vk::SubpassDescriptionFlags(),    /* flags */
+                vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+                0,                                /* inputAttachmentCount */
+                nullptr,                          /* pInputAttachments */
+                0,                                /* colorAttachmentCount */
+                nullptr,                          /* pColorAttachments */
+                nullptr,                          /* pResolveAttachments */
+                &depth_attachment_reference,      /* pDepthStencilAttachment */
+                0,                                /* preserveAttachmentCount */
+                nullptr,                          /* pPreserveAttachments */
+            },
+#ifdef MEOW_EDITOR
+            // depth to color pass
+            {
+                vk::SubpassDescriptionFlags(),    /* flags */
+                vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+                0,                                /* inputAttachmentCount */
+                nullptr,                          /* pInputAttachments */
+                1,                                /* colorAttachmentCount */
+                &color_attachment_reference,      /* pColorAttachments */
+                nullptr,                          /* pResolveAttachments */
+                &depth_attachment_reference,      /* pDepthStencilAttachment */
+                0,                                /* preserveAttachmentCount */
+                nullptr,                          /* pPreserveAttachments */
+            },
+#endif
+        };
+```
+
+这一看就不对了，在 shadow map pass 结束的时候，用的是 `depth_attachment_reference`，这个时候它还是 `eDepthStencilAttachmentOptimal`
+
+于是改为
+
+```cpp
+        vk::AttachmentReference depth_attachment_reference(0, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+#ifdef MEOW_EDITOR
+        std::vector<vk::AttachmentReference> color_attachment_references {
+            {0, vk::ImageLayout::eShaderReadOnlyOptimal},
+            {1, vk::ImageLayout::eColorAttachmentOptimal},
+        };
+#endif
+
+        std::vector<vk::SubpassDescription> subpass_descriptions {
+            // shadow map pass
+            {
+                vk::SubpassDescriptionFlags(),    /* flags */
+                vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+                0,                                /* inputAttachmentCount */
+                nullptr,                          /* pInputAttachments */
+                0,                                /* colorAttachmentCount */
+                nullptr,                          /* pColorAttachments */
+                nullptr,                          /* pResolveAttachments */
+                &depth_attachment_reference,      /* pDepthStencilAttachment */
+                0,                                /* preserveAttachmentCount */
+                nullptr,                          /* pPreserveAttachments */
+            },
+#ifdef MEOW_EDITOR
+            // depth to color pass
+            {
+                vk::SubpassDescriptionFlags(),    /* flags */
+                vk::PipelineBindPoint::eGraphics, /* pipelineBindPoint */
+                0,                                /* inputAttachmentCount */
+                nullptr,                          /* pInputAttachments */
+                2,                                /* colorAttachmentCount */
+                &color_attachment_references,     /* pColorAttachments */
+                nullptr,                          /* pResolveAttachments */
+                nullptr,                          /* pDepthStencilAttachment */
+                0,                                /* preserveAttachmentCount */
+                nullptr,                          /* pPreserveAttachments */
+            },
+#endif
+        };
+```
+
+但是其实这样的变换是把 shadow map 当作了 attachment 是不对的，他在第二个 subpass 是 sampler
+
+是否可以在 subpass 间隔中，把一个 attachment 做 layout 转换
+
+并且这个 attachment 不作为之后的 subpass 的 attachment，所以无法使用 `AttachmentReference` 在 `SubpassDescription` 中指定 subpass 对 attachment 的转换
+
+比如现在的问题就是，我希望深度图被渲染了之后，直接转为 shader read 的格式，作为下一个 subpass 的 sampler
+
+应该是可以 vkCmdPipelineBarrier
