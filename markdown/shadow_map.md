@@ -581,3 +581,150 @@ void main()
 但是做出来结果仍然不对
 
 于是还是输出一下采样坐标到一个 RT 上吧
+
+结果我输出的 outShadowCoord 是一片蓝，输出的 outShadowDepth 是一片黑
+
+于是发现是，其实这个 debug 的时候我是需要深度图的
+
+于是输出了，但是感觉一切正常
+
+于是灵机一动，把光源拉远了看，看上去就正常了
+
+![](../assets/light_source_far_from_object_then_shadow_appear_more_rensonable.gif)
+
+但是还是有透视矫正的问题？
+
+## 在片元中计算阴影坐标
+
+这里可以看到，理论上，地板只有在远处才有阴影
+
+但是实际上，慢慢调整光源距离，在近处也是可以看到阴影
+
+这个多重阴影的出现就是之前面试官给我提到的，在顶点着色器中计算阴影坐标会导致的问题
+
+就是导致了阴影坐标的插值，这个插值就不对了？
+
+![alt text](../assets/bug_about_calc_shadow_coord_in_vert_shader.png)
+
+不过做完了之后发现不是这个问题
+
+这个透视校正的问题纯粹是因为我之前是提前除以了 w
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in vec2 inUV0;
+
+layout (set = 0, binding = 0) uniform PerSceneData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} sceneData;
+
+layout (set = 0, binding = 1) uniform DirectionalLightData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} lightData;
+
+layout (set = 1, binding = 0) uniform PerObjDataDynamic 
+{
+	mat4 modelMatrix;
+} objData;
+
+layout (location = 0) out vec3 outShadowCoord;
+
+void main() 
+{
+	mat3 normalMatrix = transpose(inverse(mat3(objData.modelMatrix)));
+
+	vec4 worldPos = objData.modelMatrix * vec4(inPosition.xyz, 1.0);
+	gl_Position = sceneData.projectionMatrix * sceneData.viewMatrix * worldPos;
+
+	vec4 shadowProj = lightData.projectionMatrix * lightData.viewMatrix * worldPos;
+	outShadowCoord.xyz = shadowProj.xyz / shadowProj.w;
+	// [-1, 1] -> [0, 1]
+	outShadowCoord.xy = outShadowCoord.xy * 0.5 + 0.5;
+	// flip y
+	outShadowCoord.y = 1.0 - outShadowCoord.y;
+}
+```
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inShadowCoord;
+
+layout (location = 0) out vec4 outShadowCoord;
+layout (location = 1) out vec4 outShadowDepth;
+
+void main()
+{
+    outShadowCoord = vec4(inShadowCoord.xy, 1.0, 1.0);
+    outShadowDepth = vec4(inShadowCoord.z, inShadowCoord.z, inShadowCoord.z, 1.0);
+}
+```
+
+那么这个时候 gpu 又再加一层透视校正，反而会搞错
+
+所以我顶点的属性要传原始值，不要传透视除法之后的值
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in vec2 inUV0;
+
+layout (set = 0, binding = 0) uniform PerSceneData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} sceneData;
+
+layout (set = 0, binding = 1) uniform DirectionalLightData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} lightData;
+
+layout (set = 1, binding = 0) uniform PerObjDataDynamic 
+{
+	mat4 modelMatrix;
+} objData;
+
+layout (location = 0) out vec4 outShadowCoord;
+
+void main() 
+{
+	mat3 normalMatrix = transpose(inverse(mat3(objData.modelMatrix)));
+
+	vec4 worldPos = objData.modelMatrix * vec4(inPosition.xyz, 1.0);
+	gl_Position = sceneData.projectionMatrix * sceneData.viewMatrix * worldPos;
+
+	outShadowCoord = lightData.projectionMatrix * lightData.viewMatrix * worldPos;
+}
+```
+
+```glsl
+#version 450
+
+layout (location = 0) in vec4 inShadowCoord;
+
+layout (location = 0) out vec4 outShadowCoord;
+layout (location = 1) out vec4 outShadowDepth;
+
+void main()
+{
+    vec3 ShadowCoord = inShadowCoord.xyz / inShadowCoord.w;
+	// [-1, 1] -> [0, 1]
+	ShadowCoord.xy = ShadowCoord.xy * 0.5 + 0.5;
+	// flip y
+	ShadowCoord.y = 1.0 - ShadowCoord.y;
+
+    outShadowCoord = vec4(ShadowCoord.xy, 1.0, 1.0);
+    outShadowDepth = vec4(ShadowCoord.z, ShadowCoord.z, ShadowCoord.z, 1.0);
+}
+```
