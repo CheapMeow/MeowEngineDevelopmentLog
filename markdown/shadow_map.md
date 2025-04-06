@@ -455,3 +455,129 @@ VUID-vkCmdDrawIndexed-None-08114(ERROR / SPEC): msgNum: 1064294454 - Validation 
 比如现在的问题就是，我希望深度图被渲染了之后，直接转为 shader read 的格式，作为下一个 subpass 的 sampler
 
 应该是可以 vkCmdPipelineBarrier
+
+## 继续 debug 阴影：model 矩阵
+
+![alt text](../assets/bad_shadow_2.png)
+
+重新认真看这个图
+
+发现似乎每个物体的阴影都落在本地空间
+
+于是似乎是 shader 的问题
+
+于是回去看 shader
+
+发现真的是我的 shader 的问题
+
+我之前写的顶点着色是
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+layout (location = 2) in vec2 inUV0;
+
+layout (set = 0, binding = 0) uniform PerSceneData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} sceneData;
+
+layout (set = 0, binding = 1) uniform DirectionalLightData 
+{
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} lightData;
+
+layout (set = 2, binding = 0) uniform PerObjDataDynamic 
+{
+	mat4 modelMatrix;
+} objData;
+
+layout (location = 0) out vec3 outPosition;
+layout (location = 1) out vec3 outNormal;
+layout (location = 2) out vec2 outUV0;
+layout (location = 3) out vec3 outShadowCoord;
+
+void main() 
+{
+	mat3 normalMatrix = transpose(inverse(mat3(objData.modelMatrix)));
+
+	gl_Position = sceneData.projectionMatrix * sceneData.viewMatrix * objData.modelMatrix * vec4(inPosition.xyz, 1.0);
+
+    outPosition = (objData.modelMatrix * vec4(inPosition.xyz, 1.0)).xyz;
+	outNormal = normalize(normalMatrix * inNormal);
+    outUV0 = inUV0;
+
+	vec4 shadowProj = lightData.projectionMatrix * lightData.viewMatrix * vec4(inPosition.xyz, 1.0);
+	outShadowCoord.xyz = shadowProj.xyz / shadowProj.w;
+	// [-1, 1] -> [0, 1]
+	outShadowCoord.xy = outShadowCoord.xy * 0.5 + 0.5;
+	// flip y
+	outShadowCoord.y = 1.0 - outShadowCoord.y;
+}
+
+```
+
+其实我参考的是
+
+```glsl
+#version 450
+
+layout (location = 0) in vec3 inPosition;
+layout (location = 1) in vec3 inNormal;
+
+layout (binding = 0) uniform MVPBlock 
+{
+	mat4 modelMatrix;
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+} uboMVP;
+
+layout (binding = 1) uniform LightMVPBlock 
+{
+	mat4 modelMatrix;
+	mat4 viewMatrix;
+	mat4 projectionMatrix;
+	vec4 direction;
+} lightMVP;
+
+layout (location = 0) out vec3 outNormal;
+layout (location = 1) out vec3 outShadowCoord;
+
+out gl_PerVertex 
+{
+    vec4 gl_Position;   
+};
+
+void main() 
+{
+	vec4 worldPos   = uboMVP.modelMatrix * vec4(inPosition.xyz, 1.0);
+	vec4 shadowProj = lightMVP.projectionMatrix * lightMVP.viewMatrix * worldPos;
+	outShadowCoord.xyz = shadowProj.xyz / shadowProj.w;
+	// [-1, 1] -> [0, 1]
+	outShadowCoord.xy = outShadowCoord.xy * 0.5 + 0.5;
+	// flip y
+	outShadowCoord.y = 1.0 - outShadowCoord.y;
+
+	mat3 normalMatrix = transpose(inverse(mat3(uboMVP.modelMatrix)));
+	vec3 normal  = normalize(normalMatrix * inNormal.xyz);
+	outNormal    = normal;
+
+	gl_Position  = uboMVP.projectionMatrix * uboMVP.viewMatrix * worldPos;
+}
+```
+
+他这里写了一行 `vec4 shadowProj = lightMVP.projectionMatrix * lightMVP.viewMatrix * worldPos;` 我直接没有多想直接复制过来了，于是少了一个 model 矩阵的变换，woc
+
+## 继续 debug
+
+![](../assets/move_light_source_and_shadow_behave_strange.gif)
+
+这个就已经是有正常的 model 变换的效果的
+
+但是做出来结果仍然不对
+
+于是还是输出一下采样坐标到一个 RT 上吧
