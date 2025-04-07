@@ -728,3 +728,53 @@ void main()
     outShadowDepth = vec4(ShadowCoord.z, ShadowCoord.z, ShadowCoord.z, 1.0);
 }
 ```
+
+## layout 问题
+
+```
+VUID-VkSubpassDescription-attachment-06913(ERROR / SPEC): msgNum: 540179165 - Validation Error: [ VUID-VkSubpassDescription-attachment-06913 ] | MessageID = 0x20327add | vkCreateRenderPass(): pCreateInfo->pSubpasses[0].pColorAttachments[0].layout (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) is invalid. The Vulkan spec states: If the attachment member of an element of pColorAttachments is not VK_ATTACHMENT_UNUSED, its layout member must not be VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL or VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkSubpassDescription-attachment-06913)
+    Objects: 0
+VUID-VkRenderPassCreateInfo-pAttachments-00836(ERROR / SPEC): msgNum: 1252668953 - Validation Error: [ VUID-VkRenderPassCreateInfo-pAttachments-00836 ] | MessageID = 0x4aaa3619 | vkCreateRenderPass(): pCreateInfo->pSubpasses[0].pColorAttachments[0].layout (VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) is an invalid for pAttachments[0] (first attachment to have LOAD_OP_CLEAR). The Vulkan spec states: For any member of pAttachments with a loadOp equal to VK_ATTACHMENT_LOAD_OP_CLEAR, the first use of that attachment must not specify a layout equal to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL or VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkRenderPassCreateInfo-pAttachments-00836)
+    Objects: 0
+VUID-VkDescriptorImageInfo-imageLayout-00344(ERROR / SPEC): msgNum: -564812795 - Validation Error: [ VUID-VkDescriptorImageInfo-imageLayout-00344 ] Object 0: handle = 0x2415acf1f80, type = VK_OBJECT_TYPE_COMMAND_BUFFER; Object 1: handle = 0x4b7df1000000002f, type = VK_OBJECT_TYPE_IMAGE; | MessageID = 0xde55a405 | vkCmdDrawIndexed():  Cannot use VkImage 0x4b7df1000000002f[] (layer=0 mip=0) with specific layout VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL that doesn't match the previous known layout VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL. The Vulkan spec states: imageLayout must match the actual VkImageLayout of each subresource accessible from imageView at the time this descriptor is accessed as defined by the image layout matching rules (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-VkDescriptorImageInfo-imageLayout-00344)
+    Objects: 2
+        [0] 0x2415acf1f80, type: 6, name: NULL
+        [1] 0x4b7df1000000002f, type: 10, name: NULL
+VUID-vkCmdDrawIndexed-None-08114(ERROR / SPEC): msgNum: 1064294454 - Validation Error: [ VUID-vkCmdDrawIndexed-None-08114 ] Object 0: handle = 0x2d0f10000000124, type = VK_OBJECT_TYPE_DESCRIPTOR_SET; | MessageID = 0x3f6fd836 | vkCmdDrawIndexed():  Descriptor set VkDescriptorSet 0x2d0f10000000124[] Image layout specified by vkCmdBindDescriptorSets doesn't match actual image layout at time descriptor is used.. See previous error callback for specific details. The Vulkan spec states: Descriptors in each bound descriptor set, specified via vkCmdBindDescriptorSets, must be valid as described by descriptor validity if they are statically used by the VkPipeline bound to the pipeline bind point used by this command and the bound VkPipeline was not created with VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT (https://vulkan.lunarg.com/doc/view/1.3.275.0/windows/1.3-extensions/vkspec.html#VUID-vkCmdDrawIndexed-None-08114)
+    Objects: 1
+        [0] 0x2d0f10000000124, type: 23, name: NULL
+```
+
+看来是，要求用 color attachment 我写成 shader read 了
+
+这里应该是我之前写的有问题？现在把 `color_attachment_reference` 写成 `vk::ImageLayout::eColorAttachmentOptimal` 了
+
+```cpp
+    void DepthToColorPass::CreateRenderPass()
+    {
+        const vk::raii::Device& logical_device = g_runtime_context.render_system->GetLogicalDevice();
+
+        // Create a set to store all information of attachments
+
+        std::vector<vk::AttachmentDescription> attachment_descriptions;
+
+        attachment_descriptions = {
+            // color attachment
+            {
+                vk::AttachmentDescriptionFlags(),         /* flags */
+                m_color_format,                           /* format */
+                vk::SampleCountFlagBits::e1,              /* samples */
+                vk::AttachmentLoadOp::eClear,             /* loadOp */
+                vk::AttachmentStoreOp::eStore,            /* storeOp */
+                vk::AttachmentLoadOp::eDontCare,          /* stencilLoadOp */
+                vk::AttachmentStoreOp::eDontCare,         /* stencilStoreOp */
+                vk::ImageLayout::eUndefined,              /* initialLayout */
+                vk::ImageLayout::eColorAttachmentOptimal, /* finalLayout */
+            },
+        };
+        vk::AttachmentReference color_attachment_reference(0, vk::ImageLayout::eColorAttachmentOptimal);
+```
+
+但是还是有问题，看来问题不在这里？
+
+不对，问题是，要用 shader read 我还是 color attachment
