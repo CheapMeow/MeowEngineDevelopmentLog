@@ -226,3 +226,17 @@ ninja: error: loading 'build.ninja': The system cannot find the file specified.
 然后不知道为什么，之前的代码生成器一启动就退出，但是现在我构建出来的就不会有这个问题
 
 可能是因为我改了环境变量？我把 Visual Studio 的环境变量改成正确的了
+
+## cache
+
+现在的 reflection 是通过 libclang 解释 AST 捕捉到特殊的 annotation，找到需要反射的 class 和 enum。对这些类和枚举从 AST 拿出成员和函数的信息，生成反射代码
+
+在 cmake 中，对 code gen 的调用是依赖于 runtime 的源文件的时间戳是否更新
+
+生成出来的反射代码也会成为 runtime build system 的一部分
+
+所以如果 runtime 的源码修改了，那么一定会触发 code gen，code gen 又会导致反射文件的时间戳更新，那么 runtime 中依赖反射文件的部分全都要重新编译
+
+这就使得即使只是更新 runtime 的一个与反射毫不相关的文件，都会导致反射相关的所有文件都重编
+
+为了解决这个问题，添加了 code gen 解析 AST 的 cache，每次 code gen 都会序列化这个 cache 为文本文件（为了人类可读）。code gen 开始时，查看是否输入了这个序列化文件的路径，如果有，那么读取文件，和本次解析结果直接做字符串对比。如果对比相同，说明反射结果和上一次一样，不用重新生成反射文件。这就避免了意外的重新编译。
